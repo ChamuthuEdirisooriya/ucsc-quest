@@ -717,13 +717,15 @@ export function scanCard(db, card, team, now = Date.now()) {
 
   if (code.kind === 'start') return { type: team ? 'resume' : 'join' };
 
-  if (realCardId(db, code, now) !== card.id) {
-    log('decoy');
-    touch();
-    return { type: 'decoy', message: code.kind === 'decoy' ? code.message : hunt.decoy_message };
-  }
-
+  // Check the real card and move it in one write transaction, so two scans
+  // (even from separate processes sharing the database) cannot both count it.
   return tx(db, () => {
+    if (realCardId(db, code, now) !== card.id) {
+      log('decoy');
+      touch();
+      return { type: 'decoy', message: code.kind === 'decoy' ? code.message : hunt.decoy_message };
+    }
+
     const result = scanRealCard(db, hunt, code, team, log);
     touch();
     if (db.prepare('SELECT COUNT(*) AS n FROM cards WHERE code_id = ?').get(code.id).n > 1) shuffleRealCard(db, code.id, now);
