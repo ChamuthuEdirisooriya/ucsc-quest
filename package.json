@@ -1,0 +1,22 @@
+{
+  "name": "scavenger-hunt",
+  "version": "1.0.0",
+  "description": "QR-code scavenger hunt platform with per-team paths, decoys and a live admin dashboard",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "express": "^5.3.0",
+    "qrcode": "^1.5.4"
+  }
+}
