@@ -17,19 +17,39 @@ CREATE TABLE IF NOT EXISTS hunts (
   status         TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'live', 'ended')),
   welcome        TEXT NOT NULL DEFAULT '',
   finish_message TEXT NOT NULL DEFAULT '',
+  -- Decoy cards: every checkpoint can have several printed QR cards in the
+  -- same spot. Only one is real at a time; it moves to another card at a
+  -- random moment between shuffle_min and shuffle_max minutes, and right
+  -- after anyone scans it.
+  decoy_message       TEXT NOT NULL DEFAULT '',
+  decoys_per_location INTEGER NOT NULL DEFAULT 4,
+  shuffle_min         INTEGER NOT NULL DEFAULT 5,
+  shuffle_max         INTEGER NOT NULL DEFAULT 10,
   created_at     TEXT NOT NULL DEFAULT ${NOW}
 );
 
--- Every printable QR code. 'start' and 'finish' are shared by all teams,
--- 'checkpoint' codes are used by paths, 'decoy' codes only show a message.
+-- A location in the hunt. 'start' and 'finish' are shared by all teams,
+-- 'checkpoint' locations are used by paths, standalone 'decoy' locations only
+-- show a message.
 CREATE TABLE IF NOT EXISTS codes (
-  id         INTEGER PRIMARY KEY,
-  hunt_id    INTEGER NOT NULL REFERENCES hunts(id) ON DELETE CASCADE,
-  token      TEXT NOT NULL UNIQUE,
-  kind       TEXT NOT NULL CHECK (kind IN ('start', 'checkpoint', 'decoy', 'finish')),
-  label      TEXT NOT NULL DEFAULT '',
-  message    TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT ${NOW}
+  id              INTEGER PRIMARY KEY,
+  hunt_id         INTEGER NOT NULL REFERENCES hunts(id) ON DELETE CASCADE,
+  kind            TEXT NOT NULL CHECK (kind IN ('start', 'checkpoint', 'decoy', 'finish')),
+  label           TEXT NOT NULL DEFAULT '',
+  message         TEXT NOT NULL DEFAULT '',
+  real_card_id    INTEGER,
+  next_shuffle_at TEXT,
+  created_at      TEXT NOT NULL DEFAULT ${NOW}
+);
+
+-- The printed QR cards placed at a location. A location with more than one
+-- card has exactly one real card at a time (codes.real_card_id); the rest
+-- act as decoys.
+CREATE TABLE IF NOT EXISTS cards (
+  id      INTEGER PRIMARY KEY,
+  code_id INTEGER NOT NULL REFERENCES codes(id) ON DELETE CASCADE,
+  token   TEXT NOT NULL UNIQUE,
+  slot    INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS paths (
@@ -71,11 +91,13 @@ CREATE TABLE IF NOT EXISTS scans (
   hunt_id INTEGER NOT NULL REFERENCES hunts(id) ON DELETE CASCADE,
   team_id INTEGER REFERENCES teams(id) ON DELETE CASCADE,
   code_id INTEGER REFERENCES codes(id) ON DELETE SET NULL,
+  card_id INTEGER REFERENCES cards(id) ON DELETE SET NULL,
   result  TEXT NOT NULL,
   at      TEXT NOT NULL DEFAULT ${NOW}
 );
 
 CREATE INDEX IF NOT EXISTS idx_codes_hunt ON codes(hunt_id);
+CREATE INDEX IF NOT EXISTS idx_cards_code ON cards(code_id);
 CREATE INDEX IF NOT EXISTS idx_paths_hunt ON paths(hunt_id);
 CREATE INDEX IF NOT EXISTS idx_teams_hunt ON teams(hunt_id);
 CREATE INDEX IF NOT EXISTS idx_scans_hunt ON scans(hunt_id, id);
@@ -87,6 +109,8 @@ export function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  const legacy = db.prepare("SELECT 1 FROM pragma_table_info('codes') WHERE name = 'token'").get();
+  if (legacy) throw new Error(`${file} was created by an older version without decoy cards. Delete it (or set DATABASE_FILE) and restart.`);
   db.exec(SCHEMA);
   return db;
 }

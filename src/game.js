@@ -21,6 +21,8 @@ export const PATH_COLORS = ['#e4572e', '#2e86ab', '#3bb273', '#9b5de5', '#f4a259
 
 const DEFAULT_WELCOME = 'Welcome, explorers! Pick a team name to receive your first clue. Keep using this same phone for every QR code you scan.';
 const DEFAULT_FINISH = 'You found the final destination. Congratulations!';
+const DEFAULT_DECOY = 'Not this one! The real code is hiding close by. Keep looking.';
+export const MAX_CARDS = 12;
 
 /* ---------------------------------------------------------------- hunts */
 
@@ -33,8 +35,8 @@ export function createHunt(db, { name, milestones }) {
   }
   return tx(db, () => {
     const { lastInsertRowid } = db
-      .prepare('INSERT INTO hunts (name, milestones, welcome, finish_message) VALUES (?, ?, ?, ?)')
-      .run(name, milestones, DEFAULT_WELCOME, DEFAULT_FINISH);
+      .prepare('INSERT INTO hunts (name, milestones, welcome, finish_message, decoy_message) VALUES (?, ?, ?, ?, ?)')
+      .run(name, milestones, DEFAULT_WELCOME, DEFAULT_FINISH, DEFAULT_DECOY);
     const id = Number(lastInsertRowid);
     insertCode(db, id, 'start', 'Starting point');
     insertCode(db, id, 'finish', 'Final destination');
@@ -57,6 +59,19 @@ export function updateHunt(db, id, changes) {
   }
   if (changes.welcome !== undefined) next.welcome = String(changes.welcome);
   if (changes.finish_message !== undefined) next.finish_message = String(changes.finish_message);
+  if (changes.decoy_message !== undefined) next.decoy_message = String(changes.decoy_message);
+  if (changes.decoys_per_location !== undefined) {
+    next.decoys_per_location = Number(changes.decoys_per_location);
+    if (!Number.isInteger(next.decoys_per_location) || next.decoys_per_location < 0 || next.decoys_per_location > MAX_CARDS - 1) {
+      throw new UserError(`Decoys per location must be between 0 and ${MAX_CARDS - 1}.`);
+    }
+  }
+  for (const key of ['shuffle_min', 'shuffle_max']) {
+    if (changes[key] === undefined) continue;
+    next[key] = Number(changes[key]);
+    if (!Number.isInteger(next[key]) || next[key] < 1 || next[key] > 240) throw new UserError('Shuffle times must be between 1 and 240 minutes.');
+  }
+  if (next.shuffle_min > next.shuffle_max) throw new UserError('The shortest shuffle time cannot be longer than the longest.');
 
   if (changes.milestones !== undefined && Number(changes.milestones) !== hunt.milestones) {
     const n = Number(changes.milestones);
@@ -76,8 +91,10 @@ export function updateHunt(db, id, changes) {
   }
 
   tx(db, () => {
-    db.prepare('UPDATE hunts SET name = ?, welcome = ?, finish_message = ?, milestones = ?, status = ? WHERE id = ?')
-      .run(next.name, next.welcome, next.finish_message, next.milestones, next.status, id);
+    db.prepare(`UPDATE hunts SET name = ?, welcome = ?, finish_message = ?, milestones = ?, status = ?,
+        decoy_message = ?, decoys_per_location = ?, shuffle_min = ?, shuffle_max = ? WHERE id = ?`)
+      .run(next.name, next.welcome, next.finish_message, next.milestones, next.status,
+        next.decoy_message, next.decoys_per_location, next.shuffle_min, next.shuffle_max, id);
     if (next.milestones < hunt.milestones) {
       db.prepare('DELETE FROM path_steps WHERE position > ? AND path_id IN (SELECT id FROM paths WHERE hunt_id = ?)')
         .run(next.milestones, id);
@@ -97,6 +114,21 @@ export function getBundle(db, huntId, overrides = {}) {
     FROM codes c WHERE c.hunt_id = ?
     ORDER BY CASE c.kind WHEN 'start' THEN 0 WHEN 'checkpoint' THEN 1 WHEN 'decoy' THEN 2 ELSE 3 END, c.id
   `).all(huntId);
+
+  const cards = db.prepare(`
+    SELECT k.id, k.code_id, k.token, k.slot, (SELECT COUNT(*) FROM scans s WHERE s.card_id = k.id) AS scan_count
+    FROM cards k JOIN codes c ON c.id = k.code_id
+    WHERE c.hunt_id = ? ORDER BY k.code_id, k.slot
+  `).all(huntId);
+  const cardsByCode = Map.groupBy(cards, (k) => k.code_id);
+  for (const c of codes) {
+    c.cards = cardsByCode.get(c.id) ?? [];
+    if (c.kind !== 'decoy' && c.cards.length > 1) {
+      // Bring the rotation up to date so the dashboard shows the card that is real right now.
+      c.real_card_id = realCardId(db, c);
+      c.next_shuffle_at = getCode(db, c.id).next_shuffle_at;
+    }
+  }
 
   const paths = db.prepare(`
     SELECT p.*, (SELECT COUNT(*) FROM teams t WHERE t.path_id = p.id) AS team_count
@@ -176,8 +208,8 @@ export function validateHunt(bundle) {
     else firstStops.set(first, p.name);
   }
   for (const c of codes) {
-    if (c.kind === 'checkpoint' && c.usage.length === 0) warnings.push({ code_id: c.id, message: `Checkpoint "${c.label || c.token}" is not in any path. Scanning it will just say "not your next stop".` });
-    if (c.kind === 'decoy' && !c.message.trim()) warnings.push({ code_id: c.id, message: `Decoy "${c.label || c.token}" has no message.` });
+    if (c.kind === 'checkpoint' && c.usage.length === 0) warnings.push({ code_id: c.id, message: `Checkpoint "${c.label || `#${c.id}`}" is not in any path. Scanning it will just say "not your next stop".` });
+    if (c.kind === 'decoy' && !c.message.trim()) warnings.push({ code_id: c.id, message: `Decoy "${c.label || `#${c.id}`}" has no message.` });
   }
 
   return { errors, warnings };
@@ -185,13 +217,20 @@ export function validateHunt(bundle) {
 
 /* ---------------------------------------------------------------- codes */
 
-function insertCode(db, huntId, kind, label = '', message = '') {
+function insertCode(db, huntId, kind, label = '', message = '', cardCount = 1) {
+  const { lastInsertRowid } = db
+    .prepare('INSERT INTO codes (hunt_id, kind, label, message) VALUES (?, ?, ?, ?)')
+    .run(huntId, kind, label, message);
+  const id = Number(lastInsertRowid);
+  for (let slot = 1; slot <= cardCount; slot++) insertCard(db, id, slot);
+  if (kind !== 'decoy') shuffleRealCard(db, id);
+  return id;
+}
+
+function insertCard(db, codeId, slot) {
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      const { lastInsertRowid } = db
-        .prepare('INSERT INTO codes (hunt_id, token, kind, label, message) VALUES (?, ?, ?, ?, ?)')
-        .run(huntId, randomCode(10), kind, label, message);
-      return Number(lastInsertRowid);
+      return Number(db.prepare('INSERT INTO cards (code_id, token, slot) VALUES (?, ?, ?)').run(codeId, randomCode(10), slot).lastInsertRowid);
     } catch (err) {
       if (!String(err.message).includes('UNIQUE')) throw err;
     }
@@ -199,31 +238,105 @@ function insertCode(db, huntId, kind, label = '', message = '') {
   throw new Error('Could not generate a unique QR token.');
 }
 
+/**
+ * Add checkpoint or standalone decoy locations. Each checkpoint gets one real
+ * card plus `decoys` decoy cards (default: the hunt's decoys_per_location).
+ */
 export function createCodes(db, huntId, kind, items) {
   if (!['checkpoint', 'decoy'].includes(kind)) throw new UserError('You can only add checkpoint or decoy QRs.');
-  if (!getHunt(db, huntId)) throw new UserError('Hunt not found.', 404);
+  const hunt = getHunt(db, huntId);
+  if (!hunt) throw new UserError('Hunt not found.', 404);
   if (!Array.isArray(items) || items.length === 0) throw new UserError('Nothing to add.');
   if (items.length > 200) throw new UserError('Add at most 200 QRs at a time.');
-  return tx(db, () => items.map((it) => insertCode(db, huntId, kind, String(it.label ?? '').trim(), String(it.message ?? ''))));
+  return tx(db, () => items.map((it) => {
+    const cards = kind === 'checkpoint' ? clampCards(1 + Number(it.decoys ?? hunt.decoys_per_location)) : 1;
+    return insertCode(db, huntId, kind, String(it.label ?? '').trim(), String(it.message ?? ''), cards);
+  }));
+}
+
+function clampCards(n) {
+  if (!Number.isInteger(n) || n < 1 || n > MAX_CARDS) throw new UserError(`A location can have between 1 and ${MAX_CARDS} QR cards.`);
+  return n;
 }
 
 export function getCode(db, id) {
   return db.prepare('SELECT * FROM codes WHERE id = ?').get(id) ?? null;
 }
 
-export function getCodeByToken(db, token) {
-  return db.prepare('SELECT * FROM codes WHERE token = ?').get(String(token).toUpperCase()) ?? null;
+export function getCardByToken(db, token) {
+  return db.prepare('SELECT * FROM cards WHERE token = ?').get(String(token).toUpperCase()) ?? null;
 }
 
-export function updateCode(db, id, { label, message }) {
+export function getCard(db, id) {
+  return db.prepare('SELECT * FROM cards WHERE id = ?').get(id) ?? null;
+}
+
+export function updateCode(db, id, { label, message, cards }) {
   const code = getCode(db, id);
   if (!code) throw new UserError('QR not found.', 404);
-  db.prepare('UPDATE codes SET label = ?, message = ? WHERE id = ?').run(
-    label !== undefined ? String(label).trim() : code.label,
-    message !== undefined ? String(message) : code.message,
-    id,
-  );
+  tx(db, () => {
+    db.prepare('UPDATE codes SET label = ?, message = ? WHERE id = ?').run(
+      label !== undefined ? String(label).trim() : code.label,
+      message !== undefined ? String(message) : code.message,
+      id,
+    );
+    if (cards !== undefined) setCardCount(db, id, Number(cards));
+  });
   return getCode(db, id);
+}
+
+/** Add or remove printed cards at a location (cards are removed from the highest slot down). */
+export function setCardCount(db, codeId, total) {
+  const code = getCode(db, codeId);
+  if (!code) throw new UserError('QR not found.', 404);
+  if (!['checkpoint', 'finish'].includes(code.kind)) throw new UserError('Only checkpoints and the finish can have decoy cards.');
+  clampCards(total);
+  const existing = db.prepare('SELECT COUNT(*) AS n FROM cards WHERE code_id = ?').get(codeId).n;
+  for (let slot = existing + 1; slot <= total; slot++) insertCard(db, codeId, slot);
+  if (total < existing) db.prepare('DELETE FROM cards WHERE code_id = ? AND slot > ?').run(codeId, total);
+  const realStillThere = db.prepare('SELECT 1 FROM cards WHERE id = ?').get(code.real_card_id);
+  if (!realStillThere) shuffleRealCard(db, codeId);
+}
+
+/* ---------------------------------------------------------------- shuffling */
+
+function shuffleDelay(hunt) {
+  const min = hunt.shuffle_min * 60_000;
+  const max = hunt.shuffle_max * 60_000;
+  return min + crypto.randomInt(max - min + 1);
+}
+
+/** Make a different card (picked at random) the real one, and schedule the next shuffle. */
+export function shuffleRealCard(db, codeId, now = Date.now()) {
+  const code = getCode(db, codeId);
+  const cards = db.prepare('SELECT id FROM cards WHERE code_id = ?').all(codeId);
+  if (cards.length === 0) return null;
+  const others = cards.filter((c) => c.id !== code.real_card_id);
+  const pool = others.length ? others : cards;
+  const pick = pool[crypto.randomInt(pool.length)].id;
+  const next = new Date(now + shuffleDelay(getHunt(db, code.hunt_id))).toISOString();
+  db.prepare('UPDATE codes SET real_card_id = ?, next_shuffle_at = ? WHERE id = ?').run(pick, next, codeId);
+  return pick;
+}
+
+/**
+ * The card that is real at this location right now. The timed shuffle is
+ * applied lazily: nobody can tell the difference until a card is scanned.
+ */
+export function realCardId(db, code, now = Date.now()) {
+  if (code.kind === 'decoy') return null;
+  const fresh = getCode(db, code.id);
+  const valid = fresh.real_card_id && db.prepare('SELECT 1 FROM cards WHERE id = ? AND code_id = ?').get(fresh.real_card_id, fresh.id);
+  const cardCount = db.prepare('SELECT COUNT(*) AS n FROM cards WHERE code_id = ?').get(fresh.id).n;
+  if (!valid || (cardCount > 1 && (!fresh.next_shuffle_at || now >= Date.parse(fresh.next_shuffle_at)))) {
+    return shuffleRealCard(db, fresh.id, now);
+  }
+  return fresh.real_card_id;
+}
+
+export function shuffleAll(db, huntId) {
+  const codes = db.prepare("SELECT id FROM codes WHERE hunt_id = ? AND kind != 'decoy'").all(huntId);
+  tx(db, () => codes.forEach((c) => shuffleRealCard(db, c.id)));
 }
 
 export function deleteCode(db, id) {
@@ -387,7 +500,7 @@ function choosePath(db, huntId) {
   return candidates[crypto.randomInt(candidates.length)];
 }
 
-export function registerTeam(db, huntId, rawName, startCodeId) {
+export function registerTeam(db, huntId, rawName, startCard) {
   const name = String(rawName ?? '').trim().replace(/\s+/g, ' ');
   if (!name) throw new UserError('Enter a team name.');
   if (name.length > 40) throw new UserError('Keep the team name under 40 characters.');
@@ -405,7 +518,8 @@ export function registerTeam(db, huntId, rawName, startCodeId) {
       .prepare('INSERT INTO teams (hunt_id, path_id, name, token, join_code) VALUES (?, ?, ?, ?, ?)')
       .run(huntId, path.id, name, token, joinCode);
     const teamId = Number(lastInsertRowid);
-    db.prepare('INSERT INTO scans (hunt_id, team_id, code_id, result) VALUES (?, ?, ?, ?)').run(huntId, teamId, startCodeId, 'registered');
+    db.prepare('INSERT INTO scans (hunt_id, team_id, code_id, card_id, result) VALUES (?, ?, ?, ?, ?)')
+      .run(huntId, teamId, startCard?.code_id ?? null, startCard?.id ?? null, 'registered');
     return db.prepare('SELECT * FROM teams WHERE id = ?').get(teamId);
   });
 }
@@ -443,70 +557,81 @@ export function teamView(db, team) {
 }
 
 /**
- * Apply a QR scan. `team` may be null when the phone has no team yet.
- * Returns { type, ... } describing what to show:
+ * Apply a scan of one printed card. `team` may be null when the phone has no
+ * team yet. Returns { type, ... } describing what to show:
  *   join      - start QR, no team yet: ask for a team name
  *   resume    - start QR, team already registered
- *   decoy     - decoy QR: show its message
- *   no-team   - any other QR on a phone with no team
+ *   decoy     - a standalone decoy, or a card that is not the real one right now
+ *   no-team   - the real card of a location, on a phone with no team
  *   found     - the team's next milestone (progress advanced)
  *   again     - a milestone the team already found
- *   off-path  - not this team's next stop (wrong path, or too far ahead)
+ *   off-path  - not this team's next stop (other path, or too far ahead)
  *   early     - finish QR before all milestones were found
  *   finished  - finish QR after all milestones (first time: justFinished)
+ * Scanning the real card of a multi-card location moves the real QR to
+ * another card, so the next team cannot just copy which card was scanned.
  */
-export function scanCode(db, code, team) {
+export function scanCard(db, card, team, now = Date.now()) {
+  const code = getCode(db, card.code_id);
+  const hunt = getHunt(db, code.hunt_id);
   const log = (result) =>
-    db.prepare('INSERT INTO scans (hunt_id, team_id, code_id, result) VALUES (?, ?, ?, ?)').run(code.hunt_id, team?.id ?? null, code.id, result);
+    db.prepare('INSERT INTO scans (hunt_id, team_id, code_id, card_id, result) VALUES (?, ?, ?, ?, ?)')
+      .run(hunt.id, team?.id ?? null, code.id, card.id, result);
   const touch = () => team && db.prepare("UPDATE teams SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(team.id);
 
-  if (code.kind === 'decoy') {
+  if (code.kind === 'start') return { type: team ? 'resume' : 'join' };
+
+  if (realCardId(db, code, now) !== card.id) {
     log('decoy');
     touch();
-    return { type: 'decoy', message: code.message };
+    return { type: 'decoy', message: code.kind === 'decoy' ? code.message : hunt.decoy_message };
   }
-  if (code.kind === 'start') return { type: team ? 'resume' : 'join' };
+
+  return tx(db, () => {
+    const result = scanRealCard(db, hunt, code, team, log);
+    touch();
+    if (db.prepare('SELECT COUNT(*) AS n FROM cards WHERE code_id = ?').get(code.id).n > 1) shuffleRealCard(db, code.id, now);
+    return result;
+  });
+}
+
+function scanRealCard(db, hunt, code, team, log) {
   if (!team) {
     log('no-team');
     return { type: 'no-team' };
   }
+  const fresh = db.prepare('SELECT * FROM teams WHERE id = ?').get(team.id);
 
-  return tx(db, () => {
-    touch();
-    const hunt = getHunt(db, code.hunt_id);
-    const fresh = db.prepare('SELECT * FROM teams WHERE id = ?').get(team.id);
-
-    if (code.kind === 'finish') {
-      if (fresh.finished_at) {
-        log('repeat');
-        return { type: 'finished' };
-      }
-      if (fresh.progress >= hunt.milestones) {
-        db.prepare("UPDATE teams SET finished_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(team.id);
-        log('finish');
-        return { type: 'finished', justFinished: true };
-      }
-      log('early');
-      return { type: 'early', progress: fresh.progress, total: hunt.milestones };
-    }
-
-    const step = fresh.path_id ? pathSteps(db, fresh.path_id).find((s) => s.code_id === code.id) : null;
-    if (!step) {
-      log('wrong');
-      return { type: 'off-path' };
-    }
-    if (step.position <= fresh.progress) {
+  if (code.kind === 'finish') {
+    if (fresh.finished_at) {
       log('repeat');
-      return { type: 'again', position: step.position, total: hunt.milestones };
+      return { type: 'finished' };
     }
-    if (step.position === fresh.progress + 1 && !fresh.finished_at) {
-      db.prepare('UPDATE teams SET progress = ? WHERE id = ?').run(step.position, team.id);
-      log('advance');
-      return { type: 'found', position: step.position, total: hunt.milestones };
+    if (fresh.progress >= hunt.milestones) {
+      db.prepare("UPDATE teams SET finished_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(team.id);
+      log('finish');
+      return { type: 'finished', justFinished: true };
     }
-    log('ahead');
+    log('early');
+    return { type: 'early', progress: fresh.progress, total: hunt.milestones };
+  }
+
+  const step = fresh.path_id ? pathSteps(db, fresh.path_id).find((s) => s.code_id === code.id) : null;
+  if (!step) {
+    log('wrong');
     return { type: 'off-path' };
-  });
+  }
+  if (step.position <= fresh.progress) {
+    log('repeat');
+    return { type: 'again', position: step.position, total: hunt.milestones };
+  }
+  if (step.position === fresh.progress + 1 && !fresh.finished_at) {
+    db.prepare('UPDATE teams SET progress = ? WHERE id = ?').run(step.position, team.id);
+    log('advance');
+    return { type: 'found', position: step.position, total: hunt.milestones };
+  }
+  log('ahead');
+  return { type: 'off-path' };
 }
 
 /* ---------------------------------------------------------------- admin views */
@@ -541,8 +666,9 @@ export function liveData(db, huntId) {
   }
 
   const activity = db.prepare(`
-    SELECT s.id, s.team_id, s.code_id, s.result, s.at, t.name AS team_name
-    FROM scans s LEFT JOIN teams t ON t.id = s.team_id
+    SELECT s.id, s.team_id, s.code_id, s.result, s.at, t.name AS team_name, k.slot AS card_slot,
+      (SELECT COUNT(*) FROM cards x WHERE x.code_id = s.code_id) AS card_total
+    FROM scans s LEFT JOIN teams t ON t.id = s.team_id LEFT JOIN cards k ON k.id = s.card_id
     WHERE s.hunt_id = ? ORDER BY s.id DESC LIMIT 80
   `).all(huntId);
   for (const a of activity) {
@@ -576,7 +702,7 @@ export function liveData(db, huntId) {
 function describeCode(code) {
   if (!code) return '';
   if (code.label) return code.label;
-  return `${code.kind[0].toUpperCase()}${code.kind.slice(1)} ${code.token}`;
+  return `${code.kind[0].toUpperCase()}${code.kind.slice(1)} #${code.id}`;
 }
 
 export function teamDetail(db, teamId) {
@@ -585,7 +711,10 @@ export function teamDetail(db, teamId) {
   const bundle = getBundle(db, team.hunt_id);
   const codeById = new Map(bundle.codes.map((c) => [c.id, c]));
   const path = bundle.paths.find((p) => p.id === team.path_id) ?? null;
-  const scans = db.prepare('SELECT * FROM scans WHERE team_id = ? ORDER BY id').all(teamId);
+  const scans = db.prepare(`
+    SELECT s.*, k.slot AS card_slot, (SELECT COUNT(*) FROM cards x WHERE x.code_id = s.code_id) AS card_total
+    FROM scans s LEFT JOIN cards k ON k.id = s.card_id WHERE s.team_id = ? ORDER BY s.id
+  `).all(teamId);
   const reachedAt = new Map(scans.filter((s) => s.result === 'advance').map((s) => [s.code_id, s.at]));
 
   const route = (path?.steps ?? []).map((s) => ({

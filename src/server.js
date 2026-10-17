@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDb, getSetting, setSetting } from './db.js';
+import { openDb, getSetting, setSetting, tx } from './db.js';
 import * as game from './game.js';
 import { UserError } from './game.js';
 import * as views from './views.js';
@@ -38,7 +38,7 @@ export function createApp({ db, adminPassword }) {
 
   const baseUrl = (req) =>
     (getSetting(db, 'base_url') || process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
-  const codeUrl = (req, code) => `${baseUrl(req)}/q/${code.token}`;
+  const cardUrl = (req, card) => `${baseUrl(req)}/q/${card.token}`;
 
   /* ------------------------------------------------ live updates (SSE) */
 
@@ -59,9 +59,9 @@ export function createApp({ db, adminPassword }) {
   }
 
   app.get('/q/:token', (req, res) => {
-    const code = game.getCodeByToken(db, req.params.token);
-    if (!code) return res.status(404).send(views.messagePage('Unknown QR code', 'This QR code is not part of any hunt.'));
-    const hunt = game.getHunt(db, code.hunt_id);
+    const card = game.getCardByToken(db, req.params.token);
+    if (!card) return res.status(404).send(views.messagePage('Unknown QR code', 'This QR code is not part of any hunt.'));
+    const hunt = game.getHunt(db, game.getCode(db, card.code_id).hunt_id);
     if (!playable(req, res, hunt)) return;
     const team = teamFor(req, hunt.id);
 
@@ -71,11 +71,11 @@ export function createApp({ db, adminPassword }) {
       }));
     }
 
-    const result = game.scanCode(db, code, team);
+    const result = game.scanCard(db, card, team);
     if (!['join', 'resume'].includes(result.type)) notify(hunt.id);
 
     switch (result.type) {
-      case 'join': return res.send(views.joinPage(hunt, code));
+      case 'join': return res.send(views.joinPage(hunt, card));
       case 'resume': return res.redirect(303, `/play/${hunt.id}`);
       case 'decoy': return res.send(views.decoyPage(hunt, result.message, team));
       case 'no-team': return res.send(views.noTeamPage(hunt));
@@ -88,20 +88,21 @@ export function createApp({ db, adminPassword }) {
   });
 
   app.post('/q/:token/join', (req, res) => {
-    const code = game.getCodeByToken(db, req.params.token);
+    const card = game.getCardByToken(db, req.params.token);
+    const code = card && game.getCode(db, card.code_id);
     if (!code || code.kind !== 'start') return res.status(404).send(views.messagePage('Unknown QR code', 'This QR code is not a starting point.'));
     const hunt = game.getHunt(db, code.hunt_id);
     if (!playable(req, res, hunt)) return;
-    if (hunt.status === 'ended') return res.redirect(303, `/q/${code.token}`);
+    if (hunt.status === 'ended') return res.redirect(303, `/q/${card.token}`);
     if (teamFor(req, hunt.id)) return res.redirect(303, `/play/${hunt.id}`);
     try {
-      const team = game.registerTeam(db, hunt.id, req.body.name, code.id);
+      const team = game.registerTeam(db, hunt.id, req.body.name, card);
       setTeamCookie(res, team);
       notify(hunt.id);
       res.redirect(303, `/play/${hunt.id}?s=welcome`);
     } catch (err) {
       if (!(err instanceof UserError)) throw err;
-      res.status(err.status).send(views.joinPage(hunt, code, { error: err.message, name: req.body.name }));
+      res.status(err.status).send(views.joinPage(hunt, card, { error: err.message, name: req.body.name }));
     }
   });
 
@@ -190,7 +191,7 @@ export function createApp({ db, adminPassword }) {
   api.get('/hunts/:id', (req, res) => {
     const bundle = need(game.getBundle(db, req.params.id), 'Hunt not found.');
     const teamCount = db.prepare('SELECT COUNT(*) AS n FROM teams WHERE hunt_id = ?').get(bundle.hunt.id).n;
-    for (const c of bundle.codes) c.url = codeUrl(req, c);
+    for (const c of bundle.codes) for (const k of c.cards) k.url = cardUrl(req, k);
     res.json({ ...bundle, team_count: teamCount, issues: game.validateHunt(bundle) });
   });
 
@@ -210,14 +211,31 @@ export function createApp({ db, adminPassword }) {
 
   api.put('/codes/:id', (req, res) => res.json(game.updateCode(db, req.params.id, req.body)));
 
+  api.post('/codes/:id/shuffle', (req, res) => {
+    need(game.getCode(db, req.params.id), 'QR not found.');
+    res.json({ real_card_id: game.shuffleRealCard(db, req.params.id) });
+  });
+
+  api.post('/hunts/:id/shuffle', (req, res) => {
+    game.shuffleAll(db, Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // Set the number of cards (1 real + decoys) on every checkpoint at once.
+  api.post('/hunts/:id/cards', (req, res) => {
+    const ids = db.prepare("SELECT id FROM codes WHERE hunt_id = ? AND kind = 'checkpoint'").all(req.params.id);
+    tx(db, () => ids.forEach(({ id }) => game.setCardCount(db, id, Number(req.body.cards))));
+    res.json({ ok: true });
+  });
+
   api.delete('/codes/:id', (req, res) => {
     game.deleteCode(db, req.params.id);
     res.json({ ok: true });
   });
 
-  api.get('/codes/:id/qr.svg', async (req, res) => {
-    const code = need(game.getCode(db, req.params.id), 'QR not found.');
-    const svg = await QRCode.toString(codeUrl(req, code), { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+  api.get('/cards/:id/qr.svg', async (req, res) => {
+    const card = need(game.getCard(db, req.params.id), 'QR not found.');
+    const svg = await QRCode.toString(cardUrl(req, card), { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
     res.type('image/svg+xml').set('Cache-Control', 'no-cache').send(svg);
   });
 
@@ -296,11 +314,12 @@ export function createApp({ db, adminPassword }) {
     const only = req.query.ids ? new Set(String(req.query.ids).split(',').map(Number)) : null;
     const pathName = new Map(bundle.paths.map((p) => [p.id, p.name]));
     const codes = bundle.codes.filter((c) => kinds.includes(c.kind) && (!only || only.has(c.id)));
-    const cards = await Promise.all(codes.map(async (code) => ({
+    const cards = await Promise.all(codes.flatMap((code) => code.cards.map(async (card) => ({
       code,
-      svg: await QRCode.toString(codeUrl(req, code), { type: 'svg', margin: 0, errorCorrectionLevel: 'M' }),
+      card,
+      svg: await QRCode.toString(cardUrl(req, card), { type: 'svg', margin: 0, errorCorrectionLevel: 'M' }),
       usage: code.usage.map((u) => `${pathName.get(u.path_id)} #${u.position}`).join(', '),
-    })));
+    }))));
     res.send(views.printPage(bundle.hunt, cards, { labels: req.query.labels === '1' }));
   });
 

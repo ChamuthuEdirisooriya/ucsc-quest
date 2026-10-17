@@ -94,12 +94,12 @@ export function teamPage(view, query = {}) {
   return layout({ title: `${team.name} · ${hunt.name}`, huntName: hunt.name, body });
 }
 
-export function joinPage(hunt, code, { error = '', name = '', joinError = '', joinCode = '' } = {}) {
+export function joinPage(hunt, card, { error = '', name = '', joinError = '', joinCode = '' } = {}) {
   const body = `
     <h1 class="title">Ready to hunt?</h1>
     <p class="prose">${esc(hunt.welcome)}</p>
     ${error ? `<p class="error" role="alert">${esc(error)}</p>` : ''}
-    <form method="post" action="/q/${esc(code.token)}/join" class="stack">
+    <form method="post" action="/q/${esc(card.token)}/join" class="stack">
       <label for="name">Team name</label>
       <input id="name" name="name" maxlength="40" autocomplete="off" required value="${esc(name)}" placeholder="e.g. The Map Readers">
       <button type="submit">Start the hunt</button>
@@ -150,15 +150,15 @@ export function messagePage(title, text, { huntName = '', link = null } = {}) {
 
 const KIND_LABEL = { start: 'Start', checkpoint: 'Checkpoint', decoy: 'Decoy', finish: 'Finish' };
 
-/** Printable sheet of QR cards. `cards` = [{ code, svg, url, usage }] */
+/** Printable sheet of QR cards. `cards` = [{ code, card, svg, usage }] */
 export function printPage(hunt, cards, { labels }) {
-  const items = cards.map(({ code, svg, usage }) => `
+  const items = cards.map(({ code, card, svg, usage }) => `
     <figure class="card">
       <figcaption class="top">${esc(hunt.name)}</figcaption>
       <div class="qr">${svg}</div>
       <p class="scan">Scan me</p>
-      <p class="token">${esc(code.token)}</p>
-      ${labels ? `<p class="placement"><b>${KIND_LABEL[code.kind]}</b> · ${esc(code.label || 'unlabelled')}${usage ? `<br>${esc(usage)}` : ''}</p>` : ''}
+      <p class="token">${esc(card.token)}</p>
+      ${labels ? `<p class="placement"><b>${KIND_LABEL[code.kind]}</b> · ${esc(code.label || `#${code.id}`)}${code.cards.length > 1 ? ` · card ${card.slot} of ${code.cards.length}` : ''}${usage ? `<br>${esc(usage)}` : ''}</p>` : ''}
     </figure>`).join('');
 
   return `<!doctype html>
@@ -184,7 +184,7 @@ export function printPage(hunt, cards, { labels }) {
   }
 </style></head>
 <body>
-  <div class="bar"><button onclick="print()">Print</button><span>${cards.length} QR codes · cut along the dashed lines${labels ? ' · placement notes are for organisers, cut them off or fold them under' : ''}</span></div>
+  <div class="bar"><button onclick="print()">Print</button><span>${cards.length} QR codes · cut along the dashed lines${labels ? ' · place cards marked “card x of y” together at the same spot · cut off or fold under the placement notes' : ''}</span></div>
   <div class="grid">${items}</div>
 </body></html>`;
 }

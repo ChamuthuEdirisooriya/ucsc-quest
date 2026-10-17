@@ -82,7 +82,8 @@ function duration(from, to) {
 }
 
 const KIND_NAMES = { start: 'Start', checkpoint: 'Checkpoint', decoy: 'Decoy', finish: 'Finish' };
-const codeName = (c) => c?.label || `${KIND_NAMES[c?.kind] ?? 'QR'} ${c?.token ?? ''}`;
+const codeName = (c) => c?.label || `${KIND_NAMES[c?.kind] ?? 'QR'} #${c?.id ?? ''}`;
+const cardSuffix = (s) => (s.card_total > 1 && s.card_slot ? ` · card ${s.card_slot}` : '');
 
 function modal(title, content, { onClose } = {}) {
   const dlg = h('dialog', {},
@@ -214,7 +215,7 @@ async function renderHunt(id, tab) {
         h('div', { class: 'sub' }, `${hunt.milestones} milestones per team · ${data.paths.length} paths · ${data.team_count} teams`),
       ),
       h('div', { class: 'actions' },
-        startCode ? h('a', { class: 'btn ghost', href: startCode.url, target: '_blank', title: 'Open the start QR link like a player would' }, 'Test as player ↗') : null,
+        startCode ? h('a', { class: 'btn ghost', href: startCode.cards[0]?.url, target: '_blank', title: 'Open the start QR link like a player would' }, 'Test as player ↗') : null,
         statusActions,
       ),
     ),
@@ -307,7 +308,7 @@ async function liveTab(data, root) {
           const [icon, verb] = SCAN_TEXT[a.result] ?? ['·', a.result];
           return h('li', {},
             h('span', { class: `ico ${a.result}` }, icon),
-            h('span', {}, h('b', {}, a.team_name ?? 'Unknown phone'), ` ${verb} `, a.result === 'registered' ? null : h('span', {}, a.code_label)),
+            h('span', {}, h('b', {}, a.team_name ?? 'Unknown phone'), ` ${verb} `, a.result === 'registered' ? null : h('span', {}, a.code_label + cardSuffix(a))),
             h('time', { 'data-ago': a.at, title: new Date(a.at).toLocaleString() }, ago(a.at)));
         }))));
 
@@ -364,7 +365,7 @@ async function openTeam(teamId, live, onChange) {
       h('summary', { class: 'muted', style: { cursor: 'pointer' } }, `All ${detail.scans.length} scans`),
       h('ul', { class: 'route', style: { marginTop: '8px' } }, detail.scans.map((s) => {
         const [icon, verb] = SCAN_TEXT[s.result] ?? ['·', s.result];
-        return h('li', {}, h('span', { class: 'dot' }, icon), h('span', {}, `${verb} ${s.result === 'registered' ? '' : s.code_label}`), h('time', {}, clock(s.at)));
+        return h('li', {}, h('span', { class: 'dot' }, icon), h('span', {}, `${verb} ${s.result === 'registered' ? '' : s.code_label + cardSuffix(s)}`), h('time', {}, clock(s.at)));
       }))),
     h('div', { class: 'panel body', style: { background: '#fbfaf7' } },
       h('label', { class: 'field' }, h('span', {}, 'Name'), name),
@@ -406,9 +407,17 @@ async function pathsTab(data, root) {
   const usageText = (codeId, exceptPath) => codeById.get(codeId)?.usage
     .filter((u) => u.path_id !== exceptPath)
     .map((u) => `${pathById.get(u.path_id)?.name} #${u.position}`).join(', ');
+  // Which paths never meet this checkpoint (it is shared, but not by everyone).
+  const skippedBy = (codeId) => paths.filter((p) => !codeById.get(codeId)?.usage.some((u) => u.path_id === p.id)).map((p) => p.name);
+  const sharingTag = (c) => {
+    const k = c.usage.length;
+    if (k === 0) return 'unused';
+    if (k === paths.length) return paths.length === 1 ? 'on the path' : `every path (${k}/${k})`;
+    return `${k}/${paths.length} paths · skipped by ${skippedBy(c.id).join(', ')}`;
+  };
 
   const matrix = paths.length && checkpoints.length ? h('div', { class: 'panel matrix' },
-    h('header', {}, h('h3', {}, 'Checkpoint overview'), h('span', { class: 'hint' }, 'Numbers show the milestone position of each checkpoint in each path')),
+    h('header', {}, h('h3', {}, 'Checkpoint overview'), h('span', { class: 'hint' }, 'Numbers show the milestone position of each checkpoint in each path. Empty cells are paths whose teams never visit that checkpoint.')),
     h('table', {},
       h('thead', {}, h('tr', {}, h('th', {}, 'Checkpoint'), paths.map((p) => h('th', {}, h('span', { class: 'chip' }, h('i', { style: { background: p.color } }), p.name))), h('th', {}, ''))),
       h('tbody', {}, checkpoints.map((c) => h('tr', {},
@@ -417,7 +426,7 @@ async function pathsTab(data, root) {
           const u = c.usage.find((x) => x.path_id === p.id);
           return h('td', { class: u ? 'hit' : '', style: { '--c': p.color } }, u ? h('b', {}, u.position) : h('span', { class: 'muted' }, '·'));
         }),
-        h('td', { class: 'tag' }, c.usage.length === 0 ? 'unused' : c.usage.length === 1 ? 'exclusive' : `shared ×${c.usage.length}`),
+        h('td', { class: 'tag' }, sharingTag(c)),
       ))))) : null;
 
   fill(root, 
@@ -470,7 +479,8 @@ async function pathsTab(data, root) {
         }));
       const sharedText = (codeId) => {
         const other = usageText(codeId, p.id);
-        return other ? `Shared with ${other}` : 'Exclusive to this path';
+        const skipped = skippedBy(codeId).filter((name) => name !== p.name);
+        return [other ? `Also on ${other}` : 'Only this path', skipped.length && other ? `skipped by ${skipped.join(', ')}` : ''].filter(Boolean).join(' · ');
       };
       const hint = h('small', {}, s.code_id ? sharedText(s.code_id) : '');
       return h('div', { class: `step ${errorsAt.has(s.position) ? 'err' : ''}` },
@@ -518,20 +528,30 @@ async function pathsTab(data, root) {
 
 /* ------------------------------------------------------------ codes tab */
 
+function untilText(iso) {
+  if (!iso) return '';
+  const s = Math.round((new Date(iso) - Date.now()) / 1000);
+  if (s <= 0) return 'on the next scan';
+  return s < 60 ? `in ${s}s` : `in ${Math.round(s / 60)} min`;
+}
+
 async function codesTab(data, root) {
   const { hunt, codes, paths } = data;
   const pathById = new Map(paths.map((p) => [p.id, p]));
   const byKind = (k) => codes.filter((c) => c.kind === k);
+  const cardTotal = (k) => byKind(k).reduce((n, c) => n + c.cards.length, 0);
+  const thumbs = new Map(); // card id -> thumbnail element, to highlight the real card live
+  const shuffleNotes = new Map(); // code id -> element showing the next shuffle time
 
   const printDialog = () => {
     const kinds = { start: true, checkpoint: true, decoy: true, finish: true };
     const labels = h('input', { type: 'checkbox', checked: true });
     const dlg = modal('Print QR codes', [
-      h('p', { class: 'muted', style: { marginTop: 0 } }, 'Cards look identical whatever their type, so decoys cannot be told apart from real checkpoints. Placement notes help you put each card in the right spot — cut or fold them off before hiding the card.'),
+      h('p', { class: 'muted', style: { marginTop: 0 } }, 'All cards look the same, whether they are real or decoys. The placement notes tell you which cards go together at the same spot (“card 2 of 5”). Cut or fold them off before you put the cards out.'),
       h('div', { class: 'row', style: { marginBottom: '14px' } }, Object.keys(kinds).map((k) =>
         h('label', { class: 'row', style: { gap: '6px' } },
           h('input', { type: 'checkbox', checked: true, onchange: (e) => (kinds[k] = e.target.checked) }),
-          `${KIND_NAMES[k]} (${byKind(k).length})`))),
+          `${KIND_NAMES[k]} (${cardTotal(k)} cards)`))),
       h('label', { class: 'row', style: { gap: '6px', marginBottom: '18px' } }, labels, 'Include placement notes for organisers'),
       h('button', { class: 'btn primary', onclick: () => {
         const ks = Object.keys(kinds).filter((k) => kinds[k]).join(',');
@@ -541,7 +561,17 @@ async function codesTab(data, root) {
     ]);
   };
 
+  const cardModal = (c, card) => modal(`${codeName(c)}${c.cards.length > 1 ? ` · card ${card.slot} of ${c.cards.length}` : ''}`, [
+    h('img', { class: 'qr-big', src: `/api/cards/${card.id}/qr.svg`, alt: `QR ${card.token}` }),
+    h('p', { class: 'mono muted', style: { textAlign: 'center', wordBreak: 'break-all' } }, card.url),
+    h('div', { class: 'row', style: { justifyContent: 'center' } },
+      h('button', { class: 'btn', onclick: () => navigator.clipboard.writeText(card.url).then(() => toast('Link copied')) }, 'Copy link'),
+      h('a', { class: 'btn', href: card.url, target: '_blank' }, 'Open as a player ↗')),
+    c.cards.length > 1 ? h('p', { class: 'muted', style: { textAlign: 'center', fontSize: '12px' } }, 'Opening the link counts as a scan. If this is the real card, the real QR moves to another card.') : null,
+  ]);
+
   const codeRow = (c) => {
+    const multi = c.cards.length > 1 && c.kind !== 'decoy';
     const label = h('input', { value: c.label, placeholder: c.kind === 'decoy' ? 'Where you will plant it (organisers only)' : 'Location name (organisers only)' });
     const message = c.kind === 'decoy'
       ? h('textarea', { class: 'clue', rows: 2, value: c.message, placeholder: 'Message shown to anyone who scans this decoy…' })
@@ -549,7 +579,7 @@ async function codesTab(data, root) {
     const save = async () => {
       if (label.value === c.label && (!message || message.value === c.message)) return;
       const updated = await attempt(() => api('PUT', `/codes/${c.id}`, { label: label.value, message: message?.value }), 'Saved');
-      if (updated) Object.assign(c, updated);
+      if (updated) Object.assign(c, { label: updated.label, message: updated.message });
     };
     label.addEventListener('change', save);
     message?.addEventListener('change', save);
@@ -559,57 +589,113 @@ async function codesTab(data, root) {
         ? c.usage.map((u) => h('span', { class: 'chip' }, h('i', { style: { background: pathById.get(u.path_id)?.color } }), `${pathById.get(u.path_id)?.name} #${u.position}`))
         : h('span', {}, 'not in any path'))
       : null;
-    const note = { start: 'Teams register here and get their first clue.', finish: 'Shared final destination for every path.', decoy: 'Never advances a team.' }[c.kind];
+    const note = { start: 'Teams register here and get their first clue.', finish: 'Shared final destination for every path.', decoy: 'Never moves a team forward.' }[c.kind];
+
+    const strip = h('div', { class: 'cards-strip' }, c.cards.map((k) => {
+      const el = h('button', { class: `card-thumb ${multi && k.id === c.real_card_id ? 'real' : ''}`, title: `Card ${k.slot} · ${k.token} · ${k.scan_count} scans`, onclick: () => cardModal(c, k) },
+        h('img', { src: `/api/cards/${k.id}/qr.svg`, alt: `QR card ${k.slot}`, loading: 'lazy' }),
+        h('span', {}, multi ? `#${k.slot}` : k.token),
+        multi ? h('em', {}, 'real now') : null);
+      thumbs.set(k.id, el);
+      return el;
+    }));
+
+    let cardControls = null;
+    if (c.kind === 'checkpoint' || c.kind === 'finish') {
+      const count = h('input', { type: 'number', min: 1, max: 12, value: c.cards.length, style: { width: '64px' } });
+      const shuffleNote = h('span', {}, multi ? `next shuffle ${untilText(c.next_shuffle_at)}` : '');
+      shuffleNotes.set(c.id, shuffleNote);
+      cardControls = h('div', { class: 'card-controls' },
+        h('span', {}, 'QR cards here'), count,
+        h('button', { class: 'btn small', onclick: async () => {
+          const n = Number(count.value);
+          if (n < c.cards.length && !confirm(`Remove ${c.cards.length - n} card(s)? Printed copies of removed cards will stop working.`)) return;
+          if (await attempt(() => api('PUT', `/codes/${c.id}`, { cards: n }), 'Cards updated')) route();
+        } }, 'Set'),
+        h('span', { class: 'muted' }, multi ? `1 real + ${c.cards.length - 1} decoys · ` : 'single QR, no decoys', shuffleNote),
+        multi ? h('button', { class: 'btn small ghost', onclick: async () => {
+          const res = await attempt(() => api('POST', `/codes/${c.id}/shuffle`), 'Real QR moved');
+          if (res) refreshReal();
+        } }, '⤮ Shuffle now') : null);
+    }
 
     return h('div', { class: 'panel code' },
-      h('img', { class: 'qr', src: `/api/codes/${c.id}/qr.svg`, alt: `QR ${c.token}`, loading: 'lazy', onclick: () =>
-        modal(codeName(c), [h('img', { class: 'qr-big', src: `/api/codes/${c.id}/qr.svg` }), h('p', { class: 'mono muted', style: { textAlign: 'center' } }, c.url)]) }),
       h('div', {},
         h('div', { class: 'row', style: { marginBottom: '6px' } }, h('span', { class: `kind ${c.kind}` }, KIND_NAMES[c.kind]), note ? h('span', { class: 'muted' }, note) : null),
         label,
         message ? h('div', { style: { marginTop: '8px' } }, message) : null,
-        h('div', { class: 'meta' }, h('span', { class: 'token' }, c.token), h('span', {}, `· ${c.scan_count} scans`), usage ? ['·', usage] : null)),
+        strip,
+        cardControls,
+        h('div', { class: 'meta' }, h('span', {}, `${c.scan_count} scans`), usage ? ['·', usage] : null)),
       h('div', { class: 'side' },
-        h('button', { class: 'btn small', onclick: () => navigator.clipboard.writeText(c.url).then(() => toast('Link copied')) }, 'Copy link'),
-        h('a', { class: 'btn small', href: c.url, target: '_blank' }, 'Open ↗'),
-        h('a', { class: 'btn small', href: `/admin/print/${hunt.id}?ids=${c.id}&labels=1`, target: '_blank' }, 'Print'),
+        h('a', { class: 'btn small', href: `/admin/print/${hunt.id}?ids=${c.id}&labels=1`, target: '_blank' }, c.cards.length > 1 ? `Print ${c.cards.length} cards` : 'Print'),
         ['checkpoint', 'decoy'].includes(c.kind) ? h('button', { class: 'btn small danger', onclick: async () => {
-          if (!confirm(`Delete this ${c.kind}? Printed copies will stop working.`)) return;
+          if (!confirm(`Delete this ${c.kind} and its ${c.cards.length} card(s)? Printed copies will stop working.`)) return;
           if (await attempt(() => api('DELETE', `/codes/${c.id}`), 'Deleted')) route();
         } }, 'Delete') : null),
     );
   };
 
+  // Keep the "real now" highlight current while players scan (and as timed shuffles fall due).
+  async function refreshReal() {
+    const fresh = await api('GET', `/hunts/${hunt.id}`).catch(() => null);
+    if (!fresh) return;
+    for (const c of fresh.codes) {
+      if (c.kind === 'decoy' || c.cards.length < 2) continue;
+      for (const k of c.cards) thumbs.get(k.id)?.classList.toggle('real', k.id === c.real_card_id);
+      const note = shuffleNotes.get(c.id);
+      if (note) note.textContent = `next shuffle ${untilText(c.next_shuffle_at)}`;
+    }
+  }
+  const es = new EventSource(`/api/hunts/${hunt.id}/stream`);
+  es.onmessage = refreshReal;
+  const timer = setInterval(refreshReal, 30000);
+  onLeave(() => { es.close(); clearInterval(timer); });
+
   const cpLabels = h('textarea', { rows: 4, placeholder: 'Library entrance\nFountain\nCafeteria notice board\n…' });
+  const cpDecoys = h('input', { type: 'number', min: 0, max: 11, value: hunt.decoys_per_location, style: { width: '64px' } });
   const addCheckpoints = async () => {
-    const items = cpLabels.value.split('\n').map((s) => s.trim()).filter(Boolean).map((label) => ({ label }));
+    const items = cpLabels.value.split('\n').map((s) => s.trim()).filter(Boolean).map((label) => ({ label, decoys: Number(cpDecoys.value) }));
     if (!items.length) return toast('Write one location per line.', true);
-    if (await attempt(() => api('POST', `/hunts/${hunt.id}/codes`, { kind: 'checkpoint', items }), `${items.length} checkpoint QR${items.length > 1 ? 's' : ''} created`)) route();
+    if (await attempt(() => api('POST', `/hunts/${hunt.id}/codes`, { kind: 'checkpoint', items }), `${items.length} checkpoint${items.length > 1 ? 's' : ''} created`)) route();
   };
 
-  const decoyCount = h('input', { type: 'number', min: 1, max: 50, value: 3, style: { width: '80px' } });
+  const allCards = h('input', { type: 'number', min: 1, max: 12, value: hunt.decoys_per_location + 1 });
   const decoyLabel = h('input', { placeholder: 'Placement (optional), e.g. Near the fountain' });
-  const decoyMessage = h('textarea', { class: 'clue', rows: 2, placeholder: 'e.g. Nice try! This one was a decoy. Back to your clue…', value: 'Nice try — this one is a decoy! Head back to your clue.' });
+  const decoyCount = h('input', { type: 'number', min: 1, max: 50, value: 1, style: { width: '80px' } });
+  const decoyMessage = h('textarea', { class: 'clue', rows: 2, value: 'Nice try — this one is a decoy! Head back to your clue.' });
   const addDecoys = async () => {
     const items = Array.from({ length: Number(decoyCount.value) || 1 }, () => ({ label: decoyLabel.value, message: decoyMessage.value }));
     if (await attempt(() => api('POST', `/hunts/${hunt.id}/codes`, { kind: 'decoy', items }), `${items.length} decoy${items.length > 1 ? 's' : ''} created`)) route();
   };
 
-  fill(root, 
+  fill(root,
     h('div', { class: 'toolbar' },
       h('button', { class: 'btn primary', onclick: printDialog }, 'Print QR codes'),
-      h('span', { class: 'muted' }, `QR links point to ${codes[0]?.url.replace(/\/q\/.*/, '') ?? ''} — change it on the Settings tab.`)),
+      h('div', { class: 'group' },
+        h('span', {}, 'Every checkpoint gets'), allCards, h('span', {}, 'cards'),
+        h('button', { class: 'btn dark', onclick: async () => {
+          if (!confirm(`Set every checkpoint to ${allCards.value} QR cards (1 real + ${allCards.value - 1} decoys)? Printed copies of any removed cards stop working.`)) return;
+          if (await attempt(() => api('POST', `/hunts/${hunt.id}/cards`, { cards: Number(allCards.value) }), 'Cards updated')) route();
+        } }, 'Apply')),
+      h('button', { class: 'btn', onclick: async () => {
+        if (await attempt(() => api('POST', `/hunts/${hunt.id}/shuffle`), 'Every real QR moved')) refreshReal();
+      } }, '⤮ Shuffle all now')),
+    h('p', { class: 'muted', style: { marginTop: '-6px' } },
+      `At each spot with several cards, only one card is real. The real one moves to a random other card every ${hunt.shuffle_min}–${hunt.shuffle_max} minutes, and straight after anyone scans it. The others show the decoy message. Change this on the Settings tab.`),
 
     h('div', { class: 'section-title' }, h('h2', {}, 'Start & finish'), h('span', { class: 'hint' }, 'Shared by all teams')),
     h('div', { class: 'code-list' }, [...byKind('start'), ...byKind('finish')].map(codeRow)),
 
-    h('div', { class: 'section-title' }, h('h2', {}, 'Checkpoints'), h('span', { class: 'hint' }, `${byKind('checkpoint').length} milestone QRs. Each path picks ${hunt.milestones} of these.`)),
+    h('div', { class: 'section-title' }, h('h2', {}, 'Checkpoints'), h('span', { class: 'hint' }, `${byKind('checkpoint').length} locations, ${cardTotal('checkpoint')} cards. Each path uses ${hunt.milestones} of these locations.`)),
     h('div', { class: 'panel add-box', style: { marginBottom: '12px' } },
-      h('b', {}, 'Add checkpoint QRs — one location per line'), cpLabels,
-      h('div', {}, h('button', { class: 'btn dark', onclick: addCheckpoints }, 'Create checkpoints'))),
+      h('b', {}, 'Add checkpoint locations, one per line'), cpLabels,
+      h('div', { class: 'row' },
+        h('button', { class: 'btn dark', onclick: addCheckpoints }, 'Create checkpoints'),
+        h('span', { class: 'muted' }, 'each with 1 real card +'), cpDecoys, h('span', { class: 'muted' }, 'decoy cards'))),
     h('div', { class: 'code-list' }, byKind('checkpoint').map(codeRow)),
 
-    h('div', { class: 'section-title' }, h('h2', {}, 'Decoys'), h('span', { class: 'hint' }, 'Plant these near real checkpoints to throw teams off.')),
+    h('div', { class: 'section-title' }, h('h2', {}, 'Standalone decoys'), h('span', { class: 'hint' }, 'Single fake QRs you can put anywhere, separate from the decoy cards at each checkpoint.')),
     h('div', { class: 'panel add-box', style: { marginBottom: '12px' } },
       h('div', { class: 'row' }, h('b', {}, 'Add'), decoyCount, h('b', {}, 'decoys'), h('div', { class: 'grow' }, decoyLabel)),
       decoyMessage,
@@ -629,6 +715,10 @@ async function settingsTab(data, root) {
   const welcome = h('textarea', { rows: 3, value: hunt.welcome });
   const finish = h('textarea', { rows: 3, value: hunt.finish_message });
   const baseUrl = h('input', { value: settings.base_url, placeholder: settings.effective_base_url });
+  const decoyMessage = h('textarea', { class: 'clue', rows: 2, value: hunt.decoy_message });
+  const decoysPer = h('input', { type: 'number', min: 0, max: 11, value: hunt.decoys_per_location, style: { width: '80px' } });
+  const shuffleMin = h('input', { type: 'number', min: 1, max: 240, value: hunt.shuffle_min, style: { width: '80px' } });
+  const shuffleMax = h('input', { type: 'number', min: 1, max: 240, value: hunt.shuffle_max, style: { width: '80px' } });
 
   fill(root, 
     h('div', { class: 'panel', style: { marginBottom: '18px' } },
@@ -644,6 +734,26 @@ async function settingsTab(data, root) {
             name: name.value, welcome: welcome.value, finish_message: finish.value,
             ...(data.team_count === 0 ? { milestones: Number(milestones.value) } : {}),
           }), 'Hunt saved');
+          if (ok) route();
+        } }, 'Save'))),
+
+    h('div', { class: 'panel', style: { marginBottom: '18px' } },
+      h('header', {}, h('h3', {}, 'Decoy cards'), h('span', { class: 'hint' }, 'Several identical-looking QR cards at each spot, only one of them real')),
+      h('div', { class: 'body' },
+        h('label', { class: 'field' }, h('span', {}, 'Message on a decoy card'), decoyMessage,
+          h('small', {}, 'Shown when someone scans a card that is not the real one right now. It does not say whether the spot is right.')),
+        h('div', { class: 'row', style: { marginBottom: '14px' } },
+          h('label', { class: 'field', style: { margin: 0 } }, h('span', {}, 'Decoys per new checkpoint'), decoysPer),
+          h('label', { class: 'field', style: { margin: 0 } }, h('span', {}, 'Shuffle after at least (min)'), shuffleMin),
+          h('label', { class: 'field', style: { margin: 0 } }, h('span', {}, '…and at most (min)'), shuffleMax)),
+        h('p', { class: 'muted', style: { marginTop: 0 } }, 'The real QR moves to a random other card at a random time in this range. It also moves straight after anyone scans it, so the next team cannot just copy which card was scanned.'),
+        h('button', { class: 'btn primary', onclick: async () => {
+          const ok = await attempt(() => api('PUT', `/hunts/${hunt.id}`, {
+            decoy_message: decoyMessage.value,
+            decoys_per_location: Number(decoysPer.value),
+            shuffle_min: Number(shuffleMin.value),
+            shuffle_max: Number(shuffleMax.value),
+          }), 'Decoy settings saved');
           if (ok) route();
         } }, 'Save'))),
 
