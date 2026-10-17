@@ -52,7 +52,8 @@ Open http://localhost:3000/admin/.
 | `PORT` | `3000` | HTTP port |
 | `DATABASE_FILE` | `data/hunt.db` | SQLite database file |
 | `PUBLIC_URL` | (request host) | Base URL encoded in QR codes; it can also be set from the Settings tab |
-| `NODE_ENV` | | Set to `production` behind HTTPS to mark cookies `Secure` |
+| `NODE_ENV` | | Set to `production` behind HTTPS to mark cookies `Secure`; the server then refuses to start without `ADMIN_PASSWORD` |
+| `TRUST_PROXY` | local and private addresses | Which reverse proxies to trust for client IPs and HTTPS detection: a hop count (`1`), `true`, or addresses/subnets |
 
 **Before printing QR codes**, make sure their base URL can be reached from players' phones. `localhost` won't work. For a local event, use the machine's Wi-Fi address (the Settings tab suggests it). For a real event, deploy behind HTTPS and set `PUBLIC_URL`.
 

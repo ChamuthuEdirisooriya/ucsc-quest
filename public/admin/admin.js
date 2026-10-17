@@ -111,16 +111,26 @@ function modal(title, content, { onClose } = {}) {
 
 /* ------------------------------------------------------------ routing */
 
-let cleanup = [];
-function onLeave(fn) { cleanup.push(fn); }
+// Each navigation gets a view. Renders are async, so after every await a render
+// checks that its view is still the current one before touching the page;
+// a quick second click must never let the older, slower view win.
+let view = { live: true, cleanups: [] };
+
+/** Run fn when `owner` is navigated away from (straight away if that already happened). */
+function onLeave(fn, owner = view) {
+  if (owner.live) owner.cleanups.push(fn);
+  else fn();
+}
 
 async function route() {
-  for (const fn of cleanup) fn();
-  cleanup = [];
+  view.live = false;
+  for (const fn of view.cleanups) fn();
+  const mine = (view = { live: true, cleanups: [] });
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
 
   if (parts[0] === 'login') return renderLogin();
   const me = await api('GET', '/me').catch(() => ({ admin: false }));
+  if (!mine.live) return;
   if (!me.admin) return (location.hash = '#/login');
 
   if (parts[0] === 'hunt' && parts[1]) return renderHunt(Number(parts[1]), parts[2] || 'live');
@@ -164,7 +174,9 @@ function renderLogin() {
 /* ------------------------------------------------------------ hunts list */
 
 async function renderHunts() {
+  const mine = view;
   const hunts = await api('GET', '/hunts');
+  if (!mine.live) return;
   const name = h('input', { placeholder: 'UCSC Quest', required: true });
   const milestones = h('input', { type: 'number', min: 1, max: 50, value: 5, required: true, style: { width: '90px' } });
 
@@ -201,8 +213,9 @@ async function renderHunts() {
 /* ------------------------------------------------------------ hunt view */
 
 async function renderHunt(id, tab) {
+  const mine = view;
   const data = await api('GET', `/hunts/${id}`).catch((err) => { toast(err.message, true); location.hash = '#/'; });
-  if (!data) return;
+  if (!data || !mine.live) return;
   const { hunt, issues } = data;
 
   const setStatus = async (status, confirmText) => {
@@ -271,6 +284,7 @@ const SCAN_TEXT = {
 };
 
 async function liveTab(data, root) {
+  const mine = view;
   const huntId = data.hunt.id;
   let live = null;
 
@@ -346,6 +360,7 @@ async function liveTab(data, root) {
     draw();
   };
   await reload();
+  if (!mine.live) return;
 
   // Push updates over SSE; debounce bursts of scans.
   let pending;
@@ -353,7 +368,7 @@ async function liveTab(data, root) {
   es.onmessage = () => { clearTimeout(pending); pending = setTimeout(reload, 250); };
   const tick = setInterval(() => document.querySelectorAll('[data-ago]').forEach((el) => (el.textContent = ago(el.dataset.ago))), 15000);
   const poll = setInterval(reload, 60000); // safety net if the stream drops
-  onLeave(() => { es.close(); clearInterval(tick); clearInterval(poll); clearTimeout(pending); });
+  onLeave(() => { es.close(); clearInterval(tick); clearInterval(poll); clearTimeout(pending); }, mine);
 }
 
 async function openTeam(teamId, live, onChange) {
@@ -556,6 +571,7 @@ function untilText(iso) {
 }
 
 async function codesTab(data, root) {
+  const mine = view;
   const { hunt, codes, paths } = data;
   const pathById = new Map(paths.map((p) => [p.id, p]));
   const byKind = (k) => codes.filter((c) => c.kind === k);
@@ -667,10 +683,12 @@ async function codesTab(data, root) {
       if (note) note.textContent = `next shuffle ${untilText(c.next_shuffle_at)}`;
     }
   }
+  // One refresh after a burst of scans, not one per scan.
+  let pending;
   const es = new EventSource(`/api/hunts/${hunt.id}/stream`);
-  es.onmessage = refreshReal;
+  es.onmessage = () => { clearTimeout(pending); pending = setTimeout(refreshReal, 400); };
   const timer = setInterval(refreshReal, 30000);
-  onLeave(() => { es.close(); clearInterval(timer); });
+  onLeave(() => { es.close(); clearInterval(timer); clearTimeout(pending); }, mine);
 
   const cpLabels = h('textarea', { rows: 4, placeholder: 'Library entrance\nFountain\nCafeteria notice board\n…' });
   const cpDecoys = h('input', { type: 'number', min: 0, max: 11, value: hunt.decoys_per_location, style: { width: '64px' } });
@@ -727,8 +745,10 @@ async function codesTab(data, root) {
 /* ------------------------------------------------------------ settings tab */
 
 async function settingsTab(data, root) {
+  const mine = view;
   const { hunt } = data;
   const settings = await api('GET', '/settings');
+  if (!mine.live) return;
 
   const name = h('input', { value: hunt.name });
   const milestones = h('input', { type: 'number', min: 1, max: 50, value: hunt.milestones, disabled: data.team_count > 0 });

@@ -17,6 +17,7 @@ export function randomCode(length) {
   return out;
 }
 
+const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 export const PATH_COLORS = ['#00629b', '#e87722', '#78be20', '#ba0c2f', '#00b5e2', '#002855', '#ffc72c', '#4f7f2a', '#8b5e3c', '#5b6770'];
 
 const DEFAULT_WELCOME = 'Pick a team name to get your first clue. Use this same phone for every code you scan.';
@@ -24,15 +25,30 @@ const DEFAULT_FINISH = 'You found the final destination. Congratulations!';
 const DEFAULT_DECOY = 'The real code is hiding close by. Keep looking.';
 export const MAX_CARDS = 12;
 
+/* ---------------------------------------------------------------- input */
+
+function wholeNumber(value, min, max, message) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < min || n > max) throw new UserError(message);
+  return n;
+}
+
+const MAX_TEAM_NAME = 40;
+
+/** Team names: single spaces, 1 to 40 characters. Used for registration and admin renames. */
+function cleanTeamName(raw) {
+  const name = String(raw ?? '').trim().replace(/\s+/g, ' ');
+  if (!name) throw new UserError('Enter a team name.');
+  if (name.length > MAX_TEAM_NAME) throw new UserError(`Keep the team name to ${MAX_TEAM_NAME} characters or fewer.`);
+  return name;
+}
+
 /* ---------------------------------------------------------------- hunts */
 
 export function createHunt(db, { name, milestones }) {
   name = String(name ?? '').trim();
-  milestones = Number(milestones);
   if (!name) throw new UserError('Give the hunt a name.');
-  if (!Number.isInteger(milestones) || milestones < 1 || milestones > 50) {
-    throw new UserError('Milestones per team must be a whole number between 1 and 50.');
-  }
+  milestones = wholeNumber(milestones, 1, 50, 'Milestones per team must be a whole number between 1 and 50.');
   return tx(db, () => {
     const { lastInsertRowid } = db
       .prepare('INSERT INTO hunts (name, milestones, welcome, finish_message, decoy_message) VALUES (?, ?, ?, ?, ?)')
@@ -61,21 +77,15 @@ export function updateHunt(db, id, changes) {
   if (changes.finish_message !== undefined) next.finish_message = String(changes.finish_message);
   if (changes.decoy_message !== undefined) next.decoy_message = String(changes.decoy_message);
   if (changes.decoys_per_location !== undefined) {
-    next.decoys_per_location = Number(changes.decoys_per_location);
-    if (!Number.isInteger(next.decoys_per_location) || next.decoys_per_location < 0 || next.decoys_per_location > MAX_CARDS - 1) {
-      throw new UserError(`Decoys per location must be between 0 and ${MAX_CARDS - 1}.`);
-    }
+    next.decoys_per_location = wholeNumber(changes.decoys_per_location, 0, MAX_CARDS - 1, `Decoys per location must be between 0 and ${MAX_CARDS - 1}.`);
   }
   for (const key of ['shuffle_min', 'shuffle_max']) {
-    if (changes[key] === undefined) continue;
-    next[key] = Number(changes[key]);
-    if (!Number.isInteger(next[key]) || next[key] < 1 || next[key] > 240) throw new UserError('Shuffle times must be between 1 and 240 minutes.');
+    if (changes[key] !== undefined) next[key] = wholeNumber(changes[key], 1, 240, 'Shuffle times must be between 1 and 240 minutes.');
   }
   if (next.shuffle_min > next.shuffle_max) throw new UserError('The shortest shuffle time cannot be longer than the longest.');
 
   if (changes.milestones !== undefined && Number(changes.milestones) !== hunt.milestones) {
-    const n = Number(changes.milestones);
-    if (!Number.isInteger(n) || n < 1 || n > 50) throw new UserError('Milestones per team must be between 1 and 50.');
+    const n = wholeNumber(changes.milestones, 1, 50, 'Milestones per team must be between 1 and 50.');
     const teams = db.prepare('SELECT COUNT(*) AS n FROM teams WHERE hunt_id = ?').get(id).n;
     if (teams > 0) throw new UserError('Milestone count cannot change once teams have started. Reset the teams first.');
     next.milestones = n;
@@ -83,11 +93,17 @@ export function updateHunt(db, id, changes) {
 
   if (changes.status !== undefined && changes.status !== hunt.status) {
     if (!['draft', 'live', 'ended'].includes(changes.status)) throw new UserError('Unknown status.');
-    if (changes.status === 'live') {
-      const { errors } = validateHunt(getBundle(db, id, { milestones: next.milestones }));
-      if (errors.length) throw new UserError(`Fix ${errors.length} problem(s) before going live: ${errors[0].message}`);
-    }
     next.status = changes.status;
+  }
+
+  // A live hunt must stay playable: check when going live, and when the
+  // milestone count changes under a hunt that is already live.
+  if (next.status === 'live' && (hunt.status !== 'live' || next.milestones !== hunt.milestones)) {
+    const { errors } = validateHunt(getBundle(db, id, { overrides: { milestones: next.milestones }, cards: false }));
+    if (errors.length) {
+      const lead = hunt.status === 'live' ? 'That change would leave the live hunt unplayable' : `Fix ${errors.length} problem(s) before going live`;
+      throw new UserError(`${lead}: ${errors[0].message}`);
+    }
   }
 
   tx(db, () => {
@@ -103,30 +119,37 @@ export function updateHunt(db, id, changes) {
   return getHunt(db, id);
 }
 
-/** Hunt plus all of its codes and paths (each path padded to exactly `milestones` steps). */
-export function getBundle(db, huntId, overrides = {}) {
+/**
+ * Hunt plus all of its codes and paths (each path padded to exactly `milestones` steps).
+ * With `cards: false` it skips the printed cards, scan counts and the real-card
+ * rotation: enough for validation, path choice and the live board.
+ */
+export function getBundle(db, huntId, { overrides = {}, cards = true } = {}) {
   const found = getHunt(db, huntId);
   if (!found) return null;
   const hunt = { ...found, ...overrides };
 
   const codes = db.prepare(`
-    SELECT c.*, (SELECT COUNT(*) FROM scans s WHERE s.code_id = c.id) AS scan_count
+    SELECT c.*${cards ? ', (SELECT COUNT(*) FROM scans s WHERE s.code_id = c.id) AS scan_count' : ''}
     FROM codes c WHERE c.hunt_id = ?
     ORDER BY CASE c.kind WHEN 'start' THEN 0 WHEN 'checkpoint' THEN 1 WHEN 'decoy' THEN 2 ELSE 3 END, c.id
   `).all(huntId);
 
-  const cards = db.prepare(`
-    SELECT k.id, k.code_id, k.token, k.slot, (SELECT COUNT(*) FROM scans s WHERE s.card_id = k.id) AS scan_count
-    FROM cards k JOIN codes c ON c.id = k.code_id
-    WHERE c.hunt_id = ? ORDER BY k.code_id, k.slot
-  `).all(huntId);
-  const cardsByCode = Map.groupBy(cards, (k) => k.code_id);
-  for (const c of codes) {
-    c.cards = cardsByCode.get(c.id) ?? [];
-    if (c.kind !== 'decoy' && c.cards.length > 1) {
-      // Bring the rotation up to date so the dashboard shows the card that is real right now.
-      c.real_card_id = realCardId(db, c);
-      c.next_shuffle_at = getCode(db, c.id).next_shuffle_at;
+  if (cards) {
+    const rows = db.prepare(`
+      SELECT k.id, k.code_id, k.token, k.slot, (SELECT COUNT(*) FROM scans s WHERE s.card_id = k.id) AS scan_count
+      FROM cards k JOIN codes c ON c.id = k.code_id
+      WHERE c.hunt_id = ? ORDER BY k.code_id, k.slot
+    `).all(huntId);
+    const cardsByCode = Map.groupBy(rows, (k) => k.code_id);
+    for (const c of codes) {
+      c.cards = cardsByCode.get(c.id) ?? [];
+      if (c.kind !== 'decoy' && c.cards.length > 1) {
+        // Bring the rotation up to date so the dashboard shows the card that is real right now.
+        const current = currentRealCard(db, c.id);
+        c.real_card_id = current.real_card_id;
+        c.next_shuffle_at = current.next_shuffle_at;
+      }
     }
   }
 
@@ -248,6 +271,7 @@ export function createCodes(db, huntId, kind, items) {
   if (!hunt) throw new UserError('Hunt not found.', 404);
   if (!Array.isArray(items) || items.length === 0) throw new UserError('Nothing to add.');
   if (items.length > 200) throw new UserError('Add at most 200 QRs at a time.');
+  if (items.some((it) => !it || typeof it !== 'object')) throw new UserError('Each QR must be given as an object with a label.');
   return tx(db, () => items.map((it) => {
     const cards = kind === 'checkpoint' ? clampCards(1 + Number(it.decoys ?? hunt.decoys_per_location)) : 1;
     return insertCode(db, huntId, kind, String(it.label ?? '').trim(), String(it.message ?? ''), cards);
@@ -325,13 +349,19 @@ export function shuffleRealCard(db, codeId, now = Date.now()) {
  */
 export function realCardId(db, code, now = Date.now()) {
   if (code.kind === 'decoy') return null;
-  const fresh = getCode(db, code.id);
+  return currentRealCard(db, code.id, now).real_card_id;
+}
+
+/** The location's row with its rotation brought up to date (shuffled if the timer is due). */
+function currentRealCard(db, codeId, now = Date.now()) {
+  const fresh = getCode(db, codeId);
   const valid = fresh.real_card_id && db.prepare('SELECT 1 FROM cards WHERE id = ? AND code_id = ?').get(fresh.real_card_id, fresh.id);
   const cardCount = db.prepare('SELECT COUNT(*) AS n FROM cards WHERE code_id = ?').get(fresh.id).n;
   if (!valid || (cardCount > 1 && (!fresh.next_shuffle_at || now >= Date.parse(fresh.next_shuffle_at)))) {
-    return shuffleRealCard(db, fresh.id, now);
+    shuffleRealCard(db, fresh.id, now);
+    return getCode(db, codeId);
   }
-  return fresh.real_card_id;
+  return fresh;
 }
 
 export function shuffleAll(db, huntId) {
@@ -352,10 +382,18 @@ export function deleteCode(db, id) {
 
 export function createPath(db, huntId, { name, color } = {}) {
   if (!getHunt(db, huntId)) throw new UserError('Hunt not found.', 404);
-  const count = db.prepare('SELECT COUNT(*) AS n FROM paths WHERE hunt_id = ?').get(huntId).n;
+  if (color !== undefined && color !== null && color !== '' && !COLOR_RE.test(color)) throw new UserError('Colour must look like #rrggbb.');
+  const existing = db.prepare('SELECT name, color FROM paths WHERE hunt_id = ?').all(huntId);
+  // Default to the first unused "Path X" name and the least-used colour, so deleting
+  // a path never makes the next one share a name or colour with a live path.
+  const names = new Set(existing.map((p) => p.name));
+  let index = 0;
+  while (names.has(pathName(index))) index++;
+  const uses = (c) => existing.filter((p) => p.color.toLowerCase() === c).length;
+  const nextColor = PATH_COLORS.reduce((best, c) => (uses(c) < uses(best) ? c : best));
   const { lastInsertRowid } = db
     .prepare('INSERT INTO paths (hunt_id, name, color) VALUES (?, ?, ?)')
-    .run(huntId, String(name ?? '').trim() || pathName(count), color || PATH_COLORS[count % PATH_COLORS.length]);
+    .run(huntId, String(name ?? '').trim() || pathName(index), color || nextColor);
   return Number(lastInsertRowid);
 }
 
@@ -376,7 +414,7 @@ export function savePath(db, pathId, { name, color, start_clue, steps }) {
 
   const cleanName = name !== undefined ? String(name).trim() : path.name;
   if (!cleanName) throw new UserError('Give the path a name.');
-  if (color !== undefined && !/^#[0-9a-fA-F]{6}$/.test(color)) throw new UserError('Colour must look like #rrggbb.');
+  if (color !== undefined && !COLOR_RE.test(color)) throw new UserError('Colour must look like #rrggbb.');
 
   let cleanSteps = null;
   if (steps !== undefined) {
@@ -427,10 +465,9 @@ export function deletePath(db, pathId) {
  * Clues are left blank for the organisers to write.
  */
 export function generatePaths(db, huntId, count, { replace = false } = {}) {
-  const bundle = getBundle(db, huntId);
+  const bundle = getBundle(db, huntId, { cards: false });
   if (!bundle) throw new UserError('Hunt not found.', 404);
-  count = Number(count);
-  if (!Number.isInteger(count) || count < 1 || count > 50) throw new UserError('Generate between 1 and 50 paths.');
+  count = wholeNumber(count, 1, 50, 'Generate between 1 and 50 paths.');
   const n = bundle.hunt.milestones;
   const pool = bundle.codes.filter((c) => c.kind === 'checkpoint').map((c) => c.id);
   if (pool.length < n) throw new UserError(`Each path needs ${n} different checkpoints, but only ${pool.length} exist. Add more checkpoint QRs first.`);
@@ -490,7 +527,7 @@ export function getTeamByJoinCode(db, huntId, joinCode) {
 
 /** Pick the complete path with the fewest teams, so teams spread across all paths. */
 function choosePath(db, huntId) {
-  const bundle = getBundle(db, huntId);
+  const bundle = getBundle(db, huntId, { cards: false });
   const { errors } = validateHunt(bundle);
   const broken = new Set(errors.map((e) => e.path_id).filter(Boolean));
   const ready = bundle.paths.filter((p) => !broken.has(p.id));
@@ -501,9 +538,7 @@ function choosePath(db, huntId) {
 }
 
 export function registerTeam(db, huntId, rawName, startCard) {
-  const name = String(rawName ?? '').trim().replace(/\s+/g, ' ');
-  if (!name) throw new UserError('Enter a team name.');
-  if (name.length > 40) throw new UserError('Keep the team name under 40 characters.');
+  const name = cleanTeamName(rawName);
 
   return tx(db, () => {
     const taken = db.prepare('SELECT 1 FROM teams WHERE hunt_id = ? AND lower(name) = lower(?)').get(huntId, name);
@@ -637,7 +672,7 @@ function scanRealCard(db, hunt, code, team, log) {
 /* ---------------------------------------------------------------- admin views */
 
 export function liveData(db, huntId) {
-  const bundle = getBundle(db, huntId);
+  const bundle = getBundle(db, huntId, { cards: false });
   if (!bundle) return null;
   const codeById = new Map(bundle.codes.map((c) => [c.id, c]));
   const pathById = new Map(bundle.paths.map((p) => [p.id, p]));
@@ -648,9 +683,11 @@ export function liveData(db, huntId) {
       (SELECT COUNT(*) FROM scans s WHERE s.team_id = t.id AND s.result IN ('wrong', 'ahead', 'early')) AS wrong_scans,
       (SELECT COUNT(*) FROM scans s WHERE s.team_id = t.id AND s.result = 'decoy') AS decoy_scans,
       (SELECT s.code_id FROM scans s WHERE s.team_id = t.id ORDER BY s.id DESC LIMIT 1) AS last_code_id,
-      (SELECT s.result FROM scans s WHERE s.team_id = t.id ORDER BY s.id DESC LIMIT 1) AS last_result
+      (SELECT s.result FROM scans s WHERE s.team_id = t.id ORDER BY s.id DESC LIMIT 1) AS last_result,
+      COALESCE((SELECT MAX(s.at) FROM scans s WHERE s.team_id = t.id AND s.result = 'advance'), t.started_at) AS progress_at
     FROM teams t WHERE t.hunt_id = ?
-    ORDER BY (t.finished_at IS NULL), t.finished_at, t.progress DESC, t.last_seen_at
+    -- finished teams by finishing time; the rest by progress, then by who reached it first
+    ORDER BY (t.finished_at IS NULL), t.finished_at, t.progress DESC, progress_at, t.id
   `).all(huntId);
 
   let rank = 0;
@@ -708,7 +745,7 @@ function describeCode(code) {
 export function teamDetail(db, teamId) {
   const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(teamId);
   if (!team) return null;
-  const bundle = getBundle(db, team.hunt_id);
+  const bundle = getBundle(db, team.hunt_id, { cards: false });
   const codeById = new Map(bundle.codes.map((c) => [c.id, c]));
   const path = bundle.paths.find((p) => p.id === team.path_id) ?? null;
   const scans = db.prepare(`
@@ -740,8 +777,7 @@ export function updateTeam(db, teamId, { name, path_id, progress }) {
   const next = { ...team };
 
   if (name !== undefined) {
-    next.name = String(name).trim().replace(/\s+/g, ' ');
-    if (!next.name) throw new UserError('Team name cannot be empty.');
+    next.name = cleanTeamName(name);
     const taken = db.prepare('SELECT 1 FROM teams WHERE hunt_id = ? AND lower(name) = lower(?) AND id != ?').get(team.hunt_id, next.name, teamId);
     if (taken) throw new UserError('Another team already has that name.');
   }
@@ -751,8 +787,7 @@ export function updateTeam(db, teamId, { name, path_id, progress }) {
     next.path_id = path.id;
   }
   if (progress !== undefined) {
-    const p = Number(progress);
-    if (!Number.isInteger(p) || p < 0 || p > hunt.milestones) throw new UserError(`Progress must be between 0 and ${hunt.milestones}.`);
+    const p = wholeNumber(progress, 0, hunt.milestones, `Progress must be between 0 and ${hunt.milestones}.`);
     next.progress = p;
     if (p < hunt.milestones) next.finished_at = null;
   }

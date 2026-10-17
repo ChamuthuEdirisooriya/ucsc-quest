@@ -171,3 +171,45 @@ test('cannot go live with incomplete paths or reuse a checkpoint in one path', (
   game.savePath(db, p, { start_clue: 'x', steps: [{ code_id: c1, clue: 'y' }] });
   assert.throws(() => game.updateHunt(db, huntId, { status: 'live' }), /before going live/);
 });
+
+test('the live board ranks equal progress by who reached it first, not by the last scan', () => {
+  const { db, huntId, start, decoy } = setup();
+  let early = game.registerTeam(db, huntId, 'Early', start);
+  let late = game.registerTeam(db, huntId, 'Late', start);
+  game.scanCard(db, real(db, stepsOf(db, huntId, early)[0].code_id), early);
+  game.scanCard(db, real(db, stepsOf(db, huntId, late)[0].code_id), late);
+  // Make the order of arrival unambiguous, then let Early scan a decoy afterwards.
+  db.prepare("UPDATE scans SET at = '2026-10-17T10:05:00.000Z' WHERE team_id = ? AND result = 'advance'").run(early.id);
+  db.prepare("UPDATE scans SET at = '2026-10-17T10:20:00.000Z' WHERE team_id = ? AND result = 'advance'").run(late.id);
+  game.scanCard(db, decoy, early);
+  db.prepare("UPDATE teams SET last_seen_at = '2026-10-17T10:25:00.000Z' WHERE id = ?").run(early.id);
+  db.prepare("UPDATE teams SET last_seen_at = '2026-10-17T10:20:00.000Z' WHERE id = ?").run(late.id);
+  assert.deepEqual(game.liveData(db, huntId).teams.map((t) => t.name), ['Early', 'Late']);
+});
+
+test('changing milestones on a live hunt is refused when it would break every path', () => {
+  const { db, huntId } = setup();
+  assert.throws(() => game.updateHunt(db, huntId, { milestones: 4 }), /unplayable/);
+  assert.equal(game.getHunt(db, huntId).milestones, 3);
+});
+
+test('new paths never reuse the name or colour of an existing path', () => {
+  const db = openDb(':memory:');
+  const huntId = game.createHunt(db, { name: 'Names', milestones: 1 });
+  const [a, b, c] = [game.createPath(db, huntId), game.createPath(db, huntId), game.createPath(db, huntId)];
+  game.deletePath(db, b);
+  const d = game.createPath(db, huntId);
+  const rows = db.prepare('SELECT id, name, color FROM paths ORDER BY id').all();
+  assert.deepEqual(rows.map((r) => r.name), ['Path A', 'Path C', 'Path B']);
+  assert.equal(new Set(rows.map((r) => r.color)).size, 3);
+  assert.ok([a, c, d].every(Boolean));
+  assert.throws(() => game.createPath(db, huntId, { color: 'red;' }), /Colour/);
+});
+
+test('bad input is rejected with a clear message', () => {
+  const { db, huntId, start } = setup();
+  assert.throws(() => game.createCodes(db, huntId, 'checkpoint', [null]), game.UserError);
+  const team = game.registerTeam(db, huntId, 'Short', start);
+  assert.throws(() => game.updateTeam(db, team.id, { name: 'x'.repeat(41) }), /40 characters/);
+  assert.throws(() => game.registerTeam(db, huntId, 'y'.repeat(41), start), /40 characters/);
+});

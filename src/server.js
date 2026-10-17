@@ -12,7 +12,26 @@ import * as views from './views.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-export function createApp({ db, adminPassword }) {
+/** The address printed into every QR code: http(s), a host, optionally a path; nothing else. */
+export function cleanBaseUrl(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return '';
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    url = null;
+  }
+  if (!url || !/^https?:$/.test(url.protocol) || /\s/.test(text) || url.username || url.password || url.search || url.hash) {
+    throw new UserError('Enter a web address like https://quest.example.com (no spaces, ? or #).');
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 10;
+
+export function createApp({ db, adminPassword, trustProxy = 'loopback, linklocal, uniquelocal' }) {
   let secret = getSetting(db, 'cookie_secret');
   if (!secret) {
     secret = crypto.randomBytes(32).toString('hex');
@@ -20,10 +39,15 @@ export function createApp({ db, adminPassword }) {
   }
 
   const app = express();
-  app.set('trust proxy', true);
+  // Only trust X-Forwarded-* from local/private proxies, so clients can't spoof req.ip.
+  app.set('trust proxy', trustProxy);
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: false }));
+  app.use((req, res, next) => {
+    req.body ??= {}; // Express 5 leaves it undefined when no parser matched
+    next();
+  });
   app.use(cookieParser(secret));
   app.use(express.static(path.join(ROOT, 'public'), { extensions: ['html'] }));
 
@@ -34,7 +58,10 @@ export function createApp({ db, adminPassword }) {
       signed: true, httpOnly: true, sameSite: 'lax', secure: isProd, maxAge: 1000 * 60 * 60 * 24 * 30,
     });
   const teamFor = (req, huntId) => game.getTeamByToken(db, huntId, req.signedCookies[teamCookie(huntId)]);
-  const isAdmin = (req) => req.signedCookies.admin === 'ok';
+  // The admin session value is derived from the password, so changing
+  // ADMIN_PASSWORD signs every existing session out.
+  const adminSession = crypto.createHmac('sha256', secret).update(`admin:${adminPassword}`).digest('base64url');
+  const isAdmin = (req) => req.signedCookies.admin === adminSession;
 
   const baseUrl = (req) =>
     (getSetting(db, 'base_url') || process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
@@ -133,13 +160,25 @@ export function createApp({ db, adminPassword }) {
   const api = express.Router();
   app.use('/api', api);
 
+  const failures = new Map(); // ip -> { count, until }
+  const digest = (value) => crypto.createHash('sha256').update(String(value)).digest();
+
   api.post('/login', (req, res) => {
-    const given = Buffer.from(String(req.body.password ?? ''));
-    const expected = Buffer.from(adminPassword);
-    if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
+    const now = Date.now();
+    const record = failures.get(req.ip);
+    if (record && record.until > now && record.count >= LOGIN_MAX_FAILURES) {
+      res.set('Retry-After', String(Math.ceil((record.until - now) / 1000)));
+      return res.status(429).json({ error: 'Too many wrong passwords. Try again in a few minutes.' });
+    }
+    // Compare fixed-length digests so the check takes the same time whatever the input length.
+    if (!crypto.timingSafeEqual(digest(req.body.password ?? ''), digest(adminPassword))) {
+      if (failures.size > 5000) for (const [ip, r] of failures) if (r.until <= now) failures.delete(ip);
+      const fresh = !record || record.until <= now;
+      failures.set(req.ip, { count: fresh ? 1 : record.count + 1, until: fresh ? now + LOGIN_WINDOW_MS : record.until });
       return res.status(401).json({ error: 'Wrong password.' });
     }
-    res.cookie('admin', 'ok', { signed: true, httpOnly: true, sameSite: 'lax', secure: isProd, maxAge: 1000 * 60 * 60 * 24 * 7 });
+    failures.delete(req.ip);
+    res.cookie('admin', adminSession, { signed: true, httpOnly: true, sameSite: 'lax', secure: isProd, maxAge: 1000 * 60 * 60 * 24 * 7 });
     res.json({ ok: true });
   });
 
@@ -167,9 +206,7 @@ export function createApp({ db, adminPassword }) {
   });
 
   api.put('/settings', (req, res) => {
-    const url = String(req.body.base_url ?? '').trim();
-    if (url && !/^https?:\/\/[^\s/]+/i.test(url)) throw new UserError('The base URL must start with http:// or https://');
-    setSetting(db, 'base_url', url.replace(/\/+$/, ''));
+    setSetting(db, 'base_url', cleanBaseUrl(req.body.base_url));
     res.json({ ok: true });
   });
 
@@ -338,9 +375,18 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT) || 3000;
   const dbFile = process.env.DATABASE_FILE || path.join(ROOT, 'data', 'hunt.db');
   const adminPassword = process.env.ADMIN_PASSWORD || 'admin';
-  if (!process.env.ADMIN_PASSWORD) console.warn('⚠  ADMIN_PASSWORD is not set — using "admin". Set it before running a real event.');
+  if (!process.env.ADMIN_PASSWORD) {
+    if (process.env.NODE_ENV === 'production') {
+      console.error('ADMIN_PASSWORD must be set when NODE_ENV=production.');
+      process.exit(1);
+    }
+    console.warn('⚠  ADMIN_PASSWORD is not set — using "admin". Set it before running a real event.');
+  }
 
-  const app = createApp({ db: openDb(dbFile), adminPassword });
+  // TRUST_PROXY: a hop count ("1"), "true", or a list of proxy addresses/subnets.
+  const proxy = process.env.TRUST_PROXY;
+  const trustProxy = !proxy ? undefined : /^\d+$/.test(proxy) ? Number(proxy) : proxy === 'true' ? true : proxy;
+  const app = createApp({ db: openDb(dbFile), adminPassword, trustProxy });
   app.listen(port, '0.0.0.0', () => {
     console.log(`Scavenger Hunt running → http://localhost:${port}/admin/`);
     for (const i of Object.values(os.networkInterfaces()).flat()) {

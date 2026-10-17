@@ -102,6 +102,9 @@ CREATE INDEX IF NOT EXISTS idx_paths_hunt ON paths(hunt_id);
 CREATE INDEX IF NOT EXISTS idx_teams_hunt ON teams(hunt_id);
 CREATE INDEX IF NOT EXISTS idx_scans_hunt ON scans(hunt_id, id);
 CREATE INDEX IF NOT EXISTS idx_scans_team ON scans(team_id, id);
+CREATE INDEX IF NOT EXISTS idx_scans_code ON scans(code_id);
+CREATE INDEX IF NOT EXISTS idx_scans_card ON scans(card_id);
+CREATE INDEX IF NOT EXISTS idx_teams_path ON teams(path_id);
 CREATE INDEX IF NOT EXISTS idx_steps_code ON path_steps(code_id);
 `;
 
