@@ -19,7 +19,6 @@
   --cyan: #00b5e2;
   --tint-1: #2c77a4;
   --tint-2: #7fb0cf;
-  --tint-3: #c3dbea;
 
   --font: "General Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --step-small: clamp(0.8125rem, 0.79rem + 0.1vw, 0.875rem);
@@ -54,14 +53,15 @@ a { color: inherit; }
    the ink of whatever field it sits on: white on blue and navy, ink on paper,
    yellow and green. */
 
-.logo, .emblem {
+.logo {
   display: block;
+  flex: none;
+  height: 30px;
+  aspect-ratio: 1808 / 300;
   background-color: currentColor;
-  -webkit-mask: var(--src) left center / contain no-repeat;
-  mask: var(--src) left center / contain no-repeat;
+  -webkit-mask: url(/brand/logo.png) left center / contain no-repeat;
+  mask: url(/brand/logo.png) left center / contain no-repeat;
 }
-.logo { --src: url(/brand/logo.png); aspect-ratio: 1808 / 300; height: 30px; }
-.emblem { --src: url(/brand/emblem.png); aspect-ratio: 264 / 282; }
 
 /* ---------------------------------------------------------- fields */
 
@@ -71,12 +71,16 @@ a { color: inherit; }
   color: var(--ink);
 }
 .field > .inner { width: 100%; max-width: 72rem; margin: 0 auto; }
-.f-paper { background: var(--paper); }
-.f-blue { background: var(--blue); color: var(--white); }
-.f-navy { background: var(--navy); color: var(--white); }
-.f-green { background: var(--green); }
-.f-yellow { background: var(--yellow); }
-.f-cyan { background: var(--cyan); }
+/* Each field names its own colour and its action colours, so pads, buttons and
+   anything else drawn on it pick them up without per-field rules. */
+.f-paper, .f-blue, .f-navy, .f-green, .f-yellow, .f-cyan { background: var(--field); }
+.f-paper { --field: var(--paper); }
+.f-green { --field: var(--green); }
+.f-yellow { --field: var(--yellow); }
+.f-cyan { --field: var(--cyan); }
+.f-blue, .f-navy { color: var(--white); --action: var(--yellow); --action-ink: var(--ink); --action-hover: var(--white); }
+.f-blue { --field: var(--blue); }
+.f-navy { --field: var(--navy); }
 
 .bar {
   display: flex;
@@ -85,7 +89,7 @@ a { color: inherit; }
   gap: 16px;
   padding: 22px 0 0;
 }
-.bar a, .bar span:not(.logo) { font-weight: 500; text-decoration: none; white-space: nowrap; }
+.bar a, .bar span:not(.logo) { font-weight: 500; text-decoration: none; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .bar a:hover { text-decoration: underline; text-underline-offset: 4px; }
 
 .head {
@@ -112,17 +116,12 @@ a { color: inherit; }
   font: 600 var(--step-body)/1 var(--font);
   text-decoration: none;
   cursor: pointer;
-  background: var(--ink);
-  color: var(--white);
+  background: var(--action, var(--ink));
+  color: var(--action-ink, var(--white));
   transition: transform var(--t-press) var(--ease-out), background-color var(--t-hover) ease;
 }
+.button:hover, button:hover { background: var(--action-hover, var(--navy)); }
 .button:active, button:active { transform: scale(0.97); }
-.f-blue .button, .f-blue button, .f-navy .button, .f-navy button { background: var(--yellow); color: var(--ink); }
-.f-blue .button:hover, .f-blue button:hover, .f-navy .button:hover, .f-navy button:hover { background: var(--white); }
-.f-paper .button:hover, .f-paper button:hover,
-.f-yellow .button:hover, .f-yellow button:hover,
-.f-green .button:hover, .f-green button:hover,
-.f-cyan .button:hover, .f-cyan button:hover { background: var(--navy); }
 
 .form { display: grid; gap: 10px; max-width: 30rem; }
 .form label { font-weight: 500; }
@@ -137,8 +136,6 @@ a { color: inherit; }
   font: 500 1.125rem var(--font);
 }
 .form input::placeholder { color: #5b6573; }
-.form .row { display: grid; grid-template-columns: 1fr auto; gap: 0; }
-.form .row input { min-width: 0; }
 
 .error { font-weight: 600; background: var(--white); color: #a1001e; padding: 10px 14px; max-width: 30rem; }
 
@@ -151,6 +148,7 @@ a { color: inherit; }
   position: relative;
   display: grid;
   grid-template-rows: var(--seam) minmax(calc(100svh - var(--seam)), auto);
+  overflow-x: clip;
 }
 .wl-top { background: var(--paper); padding: 0 var(--margin); }
 .wl-bottom { display: grid; align-content: end; padding: 0 var(--margin) calc(28px + env(safe-area-inset-bottom)); padding-top: 120px; }
@@ -175,7 +173,7 @@ a { color: inherit; }
 .wl-title .copy.below { position: absolute; inset: 0; color: var(--white); clip-path: inset(var(--cut) 0 0 0); }
 .wl-title { --cut: 84%; }
 .lines .line { display: block; overflow: hidden; padding-bottom: 0.08em; margin-bottom: -0.08em; }
-.lines [data-line] { display: block; }
+.lines [data-line] { display: block; white-space: nowrap; }
 
 .waterline .below-seam {
   display: grid;
@@ -233,6 +231,8 @@ a { color: inherit; }
   .stage:not([open]) summary::after { display: none; }
   .stage[open] summary { align-items: flex-start; font-size: 2.5rem; letter-spacing: -0.02em; line-height: 1; }
   .stage[open] summary::after { display: none; }
+  /* the summary covers the whole open panel here; clicking it must not close the only open stage */
+  .stage[open] summary { pointer-events: none; cursor: default; }
   .stage p { position: absolute; left: 22px; bottom: 22px; padding: 0; }
 }
 
@@ -266,15 +266,12 @@ a { color: inherit; }
 .trace { width: 100%; height: auto; display: block; overflow: visible; }
 .trace .wire { stroke: currentColor; stroke-width: 5; stroke-linecap: round; fill: none; }
 .trace .wire.ahead { opacity: 0.35; }
-.trace .pad { fill: var(--blue); stroke: currentColor; stroke-width: 5; }
+.trace .pad { fill: var(--field); stroke: currentColor; stroke-width: 5; }
 .trace .pad.ahead { opacity: 0.45; }
 .trace .pad.done { fill: currentColor; }
+.trace .pad.core { fill: var(--field); stroke: none; }
 .trace .pad.next { stroke: var(--yellow); }
 .trace .ring { fill: none; stroke: var(--yellow); stroke-width: 3; transform-box: fill-box; transform-origin: center; }
-.trace text { fill: currentColor; font: 600 13px var(--font); }
-.f-green .trace .pad { fill: var(--green); }
-.f-green .trace .pad.done { fill: currentColor; }
-.f-green .trace .pad.core { fill: var(--green); stroke: none; }
 
 @media (prefers-reduced-motion: no-preference) {
   .trace .ring { animation: ping 1.8s var(--ease-out) infinite; }
@@ -316,6 +313,8 @@ a { color: inherit; }
   margin-bottom: -0.12em; /* the baseline sits on the screen's bottom edge */
 }
 
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
 /* ---------------------------------------------------------- motion */
 
 @media (prefers-reduced-motion: no-preference) {
@@ -335,21 +334,27 @@ a { color: inherit; }
   .js .rise > :nth-child(4) { animation-delay: 320ms; }
   .js .rise > :nth-child(5) { animation-delay: 400ms; }
   .js .waterline .rise > :nth-child(1) { animation-delay: 650ms; }
-  .js .stages.reveal > * { transform: translateX(-24px); }
-  .js .stages.reveal.in > * { transform: none; }
-  .js .stages.reveal > .stage { transition: opacity 700ms var(--ease-out), transform 700ms var(--ease-out), flex-basis 450ms var(--ease-out); }
   .js .waterline .rise > :nth-child(2) { animation-delay: 720ms; }
   .js .waterline .rise > :nth-child(3) { animation-delay: 790ms; }
-}
-@media (prefers-reduced-motion: no-preference) {
-  .js .reveal > * { opacity: 0; transform: translateY(24px); transition: opacity 700ms var(--ease-out), transform 700ms var(--ease-out); }
+
+  /* scroll entrances: the stagger lives in --d so it delays only the entrance itself */
+  .js .reveal > * {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 700ms var(--ease-out) var(--d, 0ms), transform 700ms var(--ease-out) var(--d, 0ms);
+  }
   .js .reveal.in > * { opacity: 1; transform: none; }
-  .js .reveal.in > :nth-child(2) { transition-delay: 80ms; }
-  .js .reveal.in > :nth-child(3) { transition-delay: 160ms; }
-  .js .reveal.in > :nth-child(4) { transition-delay: 240ms; }
-  .js .reveal.in > :nth-child(5) { transition-delay: 320ms; }
-  .js .photo.reveal > img { transform: scale(1.06); }
-  .js .photo.reveal.in > img { transform: none; transition-duration: 1400ms; }
+  .js .reveal.in > :nth-child(2) { --d: 80ms; }
+  .js .reveal.in > :nth-child(3) { --d: 160ms; }
+  .js .reveal.in > :nth-child(4) { --d: 240ms; }
+  .js .reveal.in > :nth-child(5) { --d: 320ms; }
+  .js .photo.reveal > img { transform: scale(1.06); transition-duration: 1400ms; }
+  .js .photo.reveal.in > img { transform: none; }
+  .js .stages.reveal > .stage {
+    transform: translateX(-24px);
+    transition: opacity 700ms var(--ease-out) var(--d, 0ms), transform 700ms var(--ease-out) var(--d, 0ms), flex-basis 450ms var(--ease-out);
+  }
+  .js .stages.reveal.in > .stage { transform: none; }
 }
 @keyframes line-up { to { transform: none; } }
 @keyframes rise { to { opacity: 1; transform: none; } }

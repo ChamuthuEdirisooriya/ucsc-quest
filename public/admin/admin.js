@@ -81,6 +81,18 @@ function duration(from, to) {
   return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m ${Math.floor((ms % 60000) / 1000)}s`;
 }
 
+// A path colour plus the ink (dark or white) that reads best on it, as CSS variables.
+function pathVars(hex) {
+  const lum = (c) => {
+    const v = parseInt(hex.slice(c, c + 2), 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  const L = 0.2126 * lum(1) + 0.7152 * lum(3) + 0.0722 * lum(5);
+  // contrast against white vs against the ink (#0a1628, luminance ~0.009)
+  const ink = 1.05 / (L + 0.05) >= (L + 0.05) / 0.059 ? '#ffffff' : '#0a1628';
+  return { '--c': hex, '--c-ink': ink };
+}
+
 const KIND_NAMES = { start: 'Start', checkpoint: 'Checkpoint', decoy: 'Decoy', finish: 'Finish' };
 const codeName = (c) => c?.label || `${KIND_NAMES[c?.kind] ?? 'QR'} #${c?.id ?? ''}`;
 const cardSuffix = (s) => (s.card_total > 1 && s.card_slot ? ` · card ${s.card_slot}` : '');
@@ -245,17 +257,17 @@ function issueList(issues, filter = () => true) {
 
 /* ------------------------------------------------------------ live tab */
 
-// Each scan result is marked by a pad (the emblem's ring) in the result's colour.
+// What each scan result reads as. Its pad (the emblem's ring) is coloured by the result class in CSS.
 const SCAN_TEXT = {
-  registered: ['', 'registered'],
-  advance: ['', 'found'],
-  finish: ['', 'finished at'],
-  repeat: ['', 're-scanned'],
-  wrong: ['', 'scanned a wrong code at'],
-  ahead: ['', 'skipped ahead to'],
-  early: ['', 'was too early at'],
-  decoy: ['', 'hit a decoy at'],
-  'no-team': ['', 'scanned without a team'],
+  registered: 'registered',
+  advance: 'found',
+  finish: 'finished at',
+  repeat: 're-scanned',
+  wrong: 'scanned a wrong code at',
+  ahead: 'skipped ahead to',
+  early: 'was too early at',
+  decoy: 'hit a decoy at',
+  'no-team': 'scanned without a team at',
 };
 
 async function liveTab(data, root) {
@@ -280,7 +292,7 @@ async function liveTab(data, root) {
             h('td', { class: 'team-name' }, t.name, h('small', {}, t.join_code)),
             h('td', {}, h('span', { class: 'chip' }, h('i', { style: { background: t.path_color } }), t.path_name)),
             h('td', {},
-              h('div', { class: 'bar', style: { '--c': t.path_color } },
+              h('div', { class: 'bar', style: pathVars(t.path_color) },
                 Array.from({ length: n }, (_, i) => h('span', { class: i < t.progress ? 'on' : '' })),
                 h('span', { class: `flag ${t.finished_at ? 'on' : ''}` })),
               h('div', { class: 'bar-label' }, t.finished_at ? `done in ${duration(t.started_at, t.finished_at)}` : `${t.progress}/${n}`)),
@@ -301,7 +313,7 @@ async function liveTab(data, root) {
           Array.from({ length: n + 2 }, (_, col) => h('td', {},
             live.teams
               .filter((t) => t.path_id === p.id && (t.finished_at ? col === n + 1 : t.progress === col))
-              .map((t) => h('span', { class: 'tchip', style: { '--c': p.color }, onclick: () => openTeam(t.id, live, reload) }, t.name)))),
+              .map((t) => h('span', { class: 'tchip', style: pathVars(p.color), onclick: () => openTeam(t.id, live, reload) }, t.name)))),
         ))))) : null;
 
     const feed = h('div', { class: 'panel' },
@@ -309,9 +321,9 @@ async function liveTab(data, root) {
       live.activity.length === 0
         ? h('div', { class: 'empty' }, 'Scans will stream in here.')
         : h('div', { class: 'feed' }, h('ul', {}, live.activity.map((a) => {
-          const [icon, verb] = SCAN_TEXT[a.result] ?? ['·', a.result];
+          const verb = SCAN_TEXT[a.result] ?? a.result;
           return h('li', {},
-            h('span', { class: `ico ${a.result}` }, icon),
+            h('span', { class: `ico ${a.result}` }),
             h('span', {}, h('b', {}, a.team_name ?? 'Unknown phone'), ` ${verb} `, a.result === 'registered' ? null : h('span', {}, a.code_label + cardSuffix(a))),
             h('time', { 'data-ago': a.at, title: new Date(a.at).toLocaleString() }, ago(a.at)));
         }))));
@@ -357,10 +369,10 @@ async function openTeam(teamId, live, onChange) {
 
   const dlg = modal(team.name, [
     h('div', { class: 'row', style: { marginBottom: '16px' } },
-      h('span', { class: 'muted' }, 'Team code '), h('b', { class: 'code' }, team.join_code),
+      h('span', { class: 'muted' }, 'Team code '), h('b', { class: 'tnum' }, team.join_code),
       h('span', { class: 'muted' }, ` · started ${clock(team.started_at)}`),
       team.finished_at ? h('span', { class: 'pill live' }, `finished in ${duration(team.started_at, team.finished_at)}`) : null),
-    h('ol', { class: 'route', style: { '--c': color } }, route.map((r) =>
+    h('ol', { class: 'route', style: pathVars(color) }, route.map((r) =>
       h('li', { class: r.reached ? 'done' : '' },
         h('span', { class: 'dot' }, r.position ?? ''),
         h('span', {}, r.label || h('em', { class: 'muted' }, 'not set')),
@@ -368,8 +380,8 @@ async function openTeam(teamId, live, onChange) {
     h('details', { style: { marginBottom: '16px' } },
       h('summary', { class: 'muted', style: { cursor: 'pointer' } }, `All ${detail.scans.length} scans`),
       h('ul', { class: 'route', style: { marginTop: '8px' } }, detail.scans.map((s) => {
-        const [icon, verb] = SCAN_TEXT[s.result] ?? ['·', s.result];
-        return h('li', {}, h('span', { class: `dot ${s.result}` }, icon), h('span', {}, `${verb} ${s.result === 'registered' ? '' : s.code_label + cardSuffix(s)}`), h('time', {}, clock(s.at)));
+        const verb = SCAN_TEXT[s.result] ?? s.result;
+        return h('li', {}, h('span', { class: `dot ${s.result}` }), h('span', {}, `${verb} ${s.result === 'registered' ? '' : s.code_label + cardSuffix(s)}`), h('time', {}, clock(s.at)));
       }))),
     h('div', { class: 'panel body', style: { background: '#fbfaf7' } },
       h('label', { class: 'field' }, h('span', {}, 'Name'), name),
@@ -428,7 +440,7 @@ async function pathsTab(data, root) {
         h('td', {}, codeName(c)),
         paths.map((p) => {
           const u = c.usage.find((x) => x.path_id === p.id);
-          return h('td', { class: u ? 'hit' : '', style: { '--c': p.color } }, u ? h('b', {}, u.position) : h('span', { class: 'muted' }, '·'));
+          return h('td', { class: u ? 'hit' : '', style: pathVars(p.color) }, u ? h('b', {}, u.position) : h('span', { class: 'muted' }, '·'));
         }),
         h('td', { class: 'tag' }, sharingTag(c)),
       ))))) : null;
@@ -497,9 +509,13 @@ async function pathsTab(data, root) {
       );
     });
 
-    card = h('section', { class: 'panel path-card', style: { '--c': p.color } },
+    card = h('section', { class: 'panel path-card', style: pathVars(p.color) },
       h('header', {},
-        h('input', { type: 'color', value: p.color, title: 'Path colour', oninput: (e) => { draft.color = e.target.value; card.style.setProperty('--c', draft.color); markDirty(); } }),
+        h('input', { type: 'color', value: p.color, title: 'Path colour', oninput: (e) => {
+          draft.color = e.target.value;
+          for (const [k, v] of Object.entries(pathVars(draft.color))) card.style.setProperty(k, v);
+          markDirty();
+        } }),
         h('input', { class: 'name', value: p.name, oninput: (e) => { draft.name = e.target.value; markDirty(); } }),
         h('span', { class: 'hint' }, `${p.team_count} team${p.team_count === 1 ? '' : 's'} on this path`),
         h('div', { class: 'grow' }),

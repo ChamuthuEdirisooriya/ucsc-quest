@@ -123,7 +123,7 @@ input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--blue); }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .grow { flex: 1; }
 .muted { color: var(--muted); }
-.code, .mono { font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+.tnum { font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
 .empty { padding: 40px 20px; color: var(--muted); }
 .empty p { margin: 0 0 8px; }
 
@@ -209,7 +209,7 @@ tbody tr.click:hover { background: var(--yellow-soft); }
 .board table { min-width: 640px; }
 .board td { vertical-align: top; min-width: 90px; }
 .board td:first-child { min-width: 120px; }
-.board .tchip { display: inline-block; margin: 2px; padding: 2px 9px; background: var(--c); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: transform 140ms var(--ease-out); }
+.board .tchip { display: inline-block; margin: 2px; padding: 2px 9px; background: var(--c); color: var(--c-ink, #fff); font-size: 13px; font-weight: 600; cursor: pointer; transition: transform 140ms var(--ease-out); }
 .board .tchip:hover { transform: translateY(-2px); }
 
 /* ---------- paths */
@@ -222,7 +222,7 @@ tbody tr.click:hover { background: var(--yellow-soft); }
 .matrix { overflow-x: auto; margin-bottom: 30px; }
 .matrix th, .matrix td { text-align: center; padding: 9px 12px; }
 .matrix th:first-child, .matrix td:first-child { text-align: left; }
-.matrix td.hit b { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: #fff; background: var(--c); font-size: 14px; }
+.matrix td.hit b { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: var(--c-ink, #fff); background: var(--c); font-size: 14px; }
 .matrix td.tag { font-size: 14px; color: var(--muted); text-align: left; }
 
 .path-card { margin-bottom: 22px; border-top: 6px solid var(--c); }
@@ -233,7 +233,7 @@ tbody tr.click:hover { background: var(--yellow-soft); }
 .steps { display: grid; }
 .step { display: grid; grid-template-columns: 44px minmax(180px, 280px) 1fr; gap: 14px; padding: 16px 20px; align-items: start; }
 .step:nth-child(odd) { background: var(--sunk); }
-.step .num { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 15px; background: var(--c); color: #fff; }
+.step .num { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 15px; background: var(--c); color: var(--c-ink, #fff); }
 .step .num.start { background: transparent; color: var(--c); border: 3px solid var(--c); font-size: 13px; }
 .step .where small { display: block; color: var(--muted); margin-top: 6px; font-size: 14px; }
 .step .lead { font-size: 14px; color: var(--muted); margin-bottom: 6px; }
@@ -276,7 +276,7 @@ dialog .body { padding: 20px; }
 .route { list-style: none; margin: 0 0 20px; padding: 0; }
 .route li { display: flex; gap: 12px; align-items: center; padding: 7px 0; }
 .route .dot { width: 24px; height: 24px; border-radius: 50%; border: 3px solid #c8cfd3; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--muted); flex: none; }
-.route li.done .dot { background: var(--c); border-color: var(--c); color: #fff; }
+.route li.done .dot { background: var(--c); border-color: var(--c); color: var(--c-ink, #fff); }
 .route .dot.advance, .route .dot.registered { background: var(--green); border-color: var(--green); }
 .route .dot.wrong, .route .dot.ahead, .route .dot.early { background: var(--red); border-color: var(--red); }
 .route .dot.decoy { background: var(--yellow); border-color: #e0a800; }

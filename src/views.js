@@ -14,6 +14,10 @@ export function esc(value) {
     .replaceAll("'", '&#39;');
 }
 
+// Loaded without blocking the first paint: on slow campus Wi-Fi the clue shows
+// in the system font straight away and switches when General Sans arrives.
+const FONT_CSS = 'https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap';
+
 const THEME = { paper: '#f5f6f4', blue: '#00629b', navy: '#002855', green: '#78be20', yellow: '#ffc72c', cyan: '#00b5e2' };
 
 function layout({ title, body, top = 'paper' }) {
@@ -28,7 +32,8 @@ function layout({ title, body, top = 'paper' }) {
 <link rel="icon" href="/brand/favicon.png">
 <link rel="preconnect" href="https://api.fontshare.com">
 <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin>
-<link rel="stylesheet" href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap">
+<link rel="stylesheet" href="${FONT_CSS}" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="${FONT_CSS}"></noscript>
 <link rel="stylesheet" href="/play.css">
 <script>document.documentElement.classList.add('js')</script>
 </head>
@@ -130,7 +135,7 @@ export function teamPage(view, query = {}) {
         ${bar(`<span>${esc(team.name)}</span>`)}
       </div>
       <div class="inner rise">
-        <p class="rank" aria-label="${ordinal(rank)} place">${rank ? ordinal(rank) : 'Done'}</p>
+        <p class="rank">${rank ? `${ordinal(rank)}<span class="sr-only"> place</span>` : 'Done'}</p>
         <h1 class="head">You made it</h1>
         <p class="lead" style="margin-top:18px">${esc(hunt.finish_message)}</p>
         <dl>
@@ -144,7 +149,8 @@ export function teamPage(view, query = {}) {
     return layout({ title: `${team.name} · ${hunt.name}`, top: 'green', body });
   }
 
-  const flash = FLASH[query.s]?.(query);
+  // Only the messages defined above; never inherited keys like `constructor`.
+  const flash = Object.hasOwn(FLASH, query.s) ? FLASH[query.s](query) : null;
   const seeking = progress >= total ? 'Find the final destination' : `Find milestone ${progress + 1}`;
   const flashHtml = flash ? `
     <section class="field ${flash.field}" role="status">
@@ -336,7 +342,7 @@ export function printPage(hunt, cards, { labels }) {
   * { box-sizing: border-box; }
   body { margin: 0; font-family: "General Sans", ui-sans-serif, system-ui, sans-serif; color: #0a1628; background: #e6e9ec; }
   .top { display: flex; gap: 16px; align-items: center; padding: 14px 20px; background: #00629b; color: #fff; font-size: 15px; }
-  .top button { font: 600 15px inherit; font-family: inherit; padding: 10px 18px; border: 0; border-radius: 0; background: #ffc72c; color: #0a1628; cursor: pointer; }
+  .top button { font: 600 15px/1 "General Sans", ui-sans-serif, system-ui, sans-serif; padding: 10px 18px; border: 0; border-radius: 0; background: #ffc72c; color: #0a1628; cursor: pointer; }
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8mm; width: 190mm; margin: 10mm auto; }
   /* the dashed outline is the cut line */
   .card { margin: 0; padding: 5mm; background: #fff; outline: 0.3mm dashed #9aa3ad; break-inside: avoid; display: flex; flex-direction: column; gap: 3mm; }
@@ -344,7 +350,7 @@ export function printPage(hunt, cards, { labels }) {
   .qr svg { width: 100%; height: auto; display: block; }
   figcaption { display: flex; justify-content: space-between; align-items: baseline; gap: 2mm; font-size: 10pt; }
   figcaption span { font-size: 8pt; font-variant-numeric: tabular-nums; color: #3c4a5c; }
-  .placement { margin: 0; padding: 2mm; background: #fff2c9; font-size: 8pt; line-height: 1.35; }
+  .placement { margin: 0; padding: 2mm; background: #fff2c9; font-size: 8pt; line-height: 1.35; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   @media print {
     body { background: #fff; }
     .top { display: none; }
