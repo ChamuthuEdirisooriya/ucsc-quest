@@ -1,6 +1,6 @@
-# Scavenger Hunt
+# UCSC Quest
 
-A QR-code scavenger hunt platform. Teams register by scanning a shared start QR, get assigned their own path of milestones, and all paths end at the same final destination. Organisers write the clues, print the QR codes, and follow every team live from an admin dashboard.
+A QR-code scavenger hunt platform for the UCSC IEEE Student Branch. Teams register by scanning a shared start QR, get assigned their own path of milestones, and all paths end at the same final destination. Organisers write the clues, print the QR codes, and follow every team live from an admin dashboard.
 
 ## How it works
 
@@ -23,6 +23,14 @@ A QR-code scavenger hunt platform. Teams register by scanning a shared start QR,
 - **Settings** — welcome, finish and decoy-card messages, milestone count, decoys per new checkpoint, shuffle timing, and the public base URL encoded in the QR codes.
 
 Hunts move from **draft → live → ended**. Players can't play a draft hunt, but a signed-in admin can ("Test as player").
+
+## Design
+
+- **Colour chapters.** Each player screen is a full-screen field in an IEEE brand colour, and the colour tells you the state: blue is your clue, green means found or finished, yellow means a decoy or the wrong stop, cyan is information, navy is the closing section. Teams can read their state at a glance, even in bright sun.
+- **The logo.** The supplied logo is white on transparent. It is used as a CSS mask, so it takes the ink colour of whatever field it sits on (`public/brand/`). The print sheet uses a dark copy (`logo-ink.png`).
+- **The trace.** The progress track is drawn in the emblem's circuit-trace style: ring pads on a trace, one per milestone, ending at the destination node.
+- **Type.** General Sans throughout, loaded from Fontshare.
+- **Photograph.** "University of Colombo School of Computing" by Sameera Shaakunthala, [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/), via [Wikimedia Commons](https://commons.wikimedia.org/w/index.php?curid=50611869). It is shown duotone in IEEE blue (`public/img/ucsc-building.jpg`), with the credit in the footer of the join page.
 
 ## Running it
 

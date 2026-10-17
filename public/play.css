@@ -1,188 +1,355 @@
+/*
+  UCSC Quest: player screens.
+  Colour chapters: every screen state is a full-bleed field in one of the
+  IEEE brand colours, and the colour means the state.
+    blue   your current clue            green  found / finished
+    yellow decoy, not your stop         cyan   information
+    navy   the close                    paper  plain pages
+  The branch emblem's circuit traces become the team's progress track.
+*/
+
 :root {
-  --paper: #f3ecdf;
-  --card: #fffaf1;
-  --ink: #23201b;
-  --muted: #6f6556;
-  --line: #ddd1bd;
-  --accent: #c8501e;
-  --accent-ink: #fff;
-  --good: #2f7d4f;
-  --good-bg: #e3f1e6;
-  --bad: #b3261e;
-  --bad-bg: #fbe5e1;
-  --info-bg: #ece4d4;
-  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --paper: #f5f6f4;
+  --ink: #0a1628;
+  --white: #ffffff;
+  --blue: #00629b;   /* IEEE Blue */
+  --navy: #002855;
+  --green: #78be20;
+  --yellow: #ffc72c;
+  --cyan: #00b5e2;
+  --tint-1: #2c77a4;
+  --tint-2: #7fb0cf;
+  --tint-3: #c3dbea;
+
+  --font: "General Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --step-small: clamp(0.8125rem, 0.79rem + 0.1vw, 0.875rem);
+  --step-body: clamp(1.0625rem, 1rem + 0.25vw, 1.1875rem);
+  --step-lead: clamp(1.25rem, 1.1rem + 0.7vw, 1.625rem);
+  --step-head: clamp(2rem, 1.3rem + 3.2vw, 4rem);
+
+  --margin: clamp(16px, 4vw, 28px);
+  --measure: 34rem;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --t-press: 140ms;
+  --t-hover: 180ms;
 }
 
 * { box-sizing: border-box; }
-
 html { -webkit-text-size-adjust: 100%; }
-
 body {
   margin: 0;
-  min-height: 100vh;
   background: var(--paper);
-  background-image: radial-gradient(rgba(120, 90, 50, .07) 1px, transparent 1px);
-  background-size: 18px 18px;
   color: var(--ink);
-  font: 17px/1.5 var(--sans);
+  font: 400 var(--step-body)/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
 }
+h1, h2, h3, p, blockquote, dl, dd { margin: 0; }
+a { color: inherit; }
+::selection { background: var(--yellow); color: var(--ink); }
+:focus-visible { outline: 3px solid var(--yellow); outline-offset: 3px; }
 
-.sheet {
-  max-width: 34rem;
-  margin: 0 auto;
-  padding: max(20px, env(safe-area-inset-top)) 18px calc(40px + env(safe-area-inset-bottom));
+/* ---------------------------------------------------------- the logo
+   The supplied logo is white on transparent. It is used as a mask, so it takes
+   the ink of whatever field it sits on: white on blue and navy, ink on paper,
+   yellow and green. */
+
+.logo, .emblem {
+  display: block;
+  background-color: currentColor;
+  -webkit-mask: var(--src) left center / contain no-repeat;
+  mask: var(--src) left center / contain no-repeat;
 }
+.logo { --src: url(/brand/logo.png); aspect-ratio: 1808 / 300; height: 30px; }
+.emblem { --src: url(/brand/emblem.png); aspect-ratio: 264 / 282; }
 
-.eyebrow {
-  margin: 0 0 18px;
-  font: 600 12px/1 var(--mono);
-  letter-spacing: .14em;
-  text-transform: uppercase;
-  color: var(--muted);
+/* ---------------------------------------------------------- fields */
+
+.field {
+  position: relative;
+  padding: 0 var(--margin);
+  color: var(--ink);
 }
+.field > .inner { width: 100%; max-width: 72rem; margin: 0 auto; }
+.f-paper { background: var(--paper); }
+.f-blue { background: var(--blue); color: var(--white); }
+.f-navy { background: var(--navy); color: var(--white); }
+.f-green { background: var(--green); }
+.f-yellow { background: var(--yellow); }
+.f-cyan { background: var(--cyan); }
 
-.title { margin: 8px 0 10px; font: 700 2rem/1.15 var(--serif); }
-.prose { margin: 0 0 22px; color: var(--ink); white-space: pre-wrap; }
-.center { text-align: center; }
-.note { text-align: center; color: var(--muted); }
-
-/* ---------- team header + progress */
-
-.team-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-.team-head h2 { margin: 0; font: 700 1.45rem/1.2 var(--serif); overflow-wrap: anywhere; }
-.team-head .meta { margin: 0; font: 13px var(--mono); color: var(--muted); white-space: nowrap; }
-
-.track {
+.bar {
   display: flex;
-  gap: 6px;
-  margin: 0 0 22px;
-  padding: 0;
-  list-style: none;
-  position: relative;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 0 0;
 }
-.track li {
-  flex: 1;
-  height: 30px;
-  border-radius: 6px;
-  border: 1.5px dashed var(--line);
-  display: grid;
-  place-items: center;
-  font: 600 12px var(--mono);
-  color: var(--muted);
-  background: transparent;
-  min-width: 0;
+.bar a, .bar span:not(.logo) { font-weight: 500; text-decoration: none; white-space: nowrap; }
+.bar a:hover { text-decoration: underline; text-underline-offset: 4px; }
+
+.head {
+  font-weight: 700;
+  font-size: var(--step-head);
+  line-height: 0.95;
+  letter-spacing: -0.02em;
+  max-width: 14ch;
 }
-.track li.done { background: var(--ink); border: 1.5px solid var(--ink); color: var(--paper); }
-.track li.next { border: 1.5px solid var(--accent); color: var(--accent); animation: pulse 1.8s ease-in-out infinite; }
-.track li.flag { flex: 0 0 38px; font-size: 15px; }
-.track li.flag.done { background: var(--accent); border-color: var(--accent); }
-@keyframes pulse { 50% { box-shadow: 0 0 0 4px rgba(200, 80, 30, .15); } }
-@media (prefers-reduced-motion: reduce) { .track li.next { animation: none; } }
+.lead { font-size: var(--step-lead); line-height: 1.3; font-weight: 500; max-width: 26ch; }
+.text { max-width: var(--measure); }
+.small { font-size: var(--step-small); }
 
-/* ---------- clue card */
+/* ---------------------------------------------------------- buttons + forms */
 
-.clue {
-  position: relative;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 22px 20px 26px;
-  box-shadow: 0 1px 0 rgba(0, 0, 0, .03), 0 12px 28px -18px rgba(80, 50, 20, .45);
-}
-.clue::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 5px;
-  border-radius: 14px 14px 0 0;
-  background: repeating-linear-gradient(90deg, var(--accent) 0 14px, transparent 14px 22px);
-}
-.clue .label {
-  margin: 0 0 12px;
-  font: 600 12px var(--mono);
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-.clue blockquote {
-  margin: 0;
-  font: 1.35rem/1.45 var(--serif);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.clue.decoy::before { background: repeating-linear-gradient(90deg, var(--muted) 0 14px, transparent 14px 22px); }
-.clue.decoy .label { color: var(--muted); }
-
-/* ---------- finish */
-
-.finish { text-align: center; padding: 10px 0; }
-.finish h1 { margin: 14px 0 8px; font: 700 2.2rem/1.1 var(--serif); }
-.medal {
-  width: 96px; height: 96px; margin: 6px auto 0;
-  border-radius: 50%;
-  display: grid; place-items: center;
-  background: var(--accent);
-  color: #fff;
-  font: 700 1.6rem var(--serif);
-  box-shadow: inset 0 0 0 6px rgba(255, 255, 255, .25), 0 10px 24px -10px rgba(200, 80, 30, .8);
-}
-.facts { display: flex; justify-content: center; gap: 28px; margin: 18px 0 0; }
-.facts dt { font: 600 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
-.facts dd { margin: 2px 0 0; font: 700 1.2rem var(--serif); }
-
-/* ---------- flash messages */
-
-.flash {
-  display: flex; flex-direction: column; gap: 2px;
-  margin: 0 0 18px; padding: 12px 14px;
-  border-radius: 10px;
-  background: var(--info-bg);
-  border-left: 4px solid var(--muted);
-}
-.flash strong { font-size: 1.05rem; }
-.flash span { font-size: .95rem; color: var(--muted); }
-.flash.good { background: var(--good-bg); border-color: var(--good); }
-.flash.good strong { color: var(--good); }
-.flash.bad { background: var(--bad-bg); border-color: var(--bad); }
-.flash.bad strong { color: var(--bad); }
-
-/* ---------- forms */
-
-.stack { display: flex; flex-direction: column; gap: 8px; }
-label { font: 600 13px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-input {
-  width: 100%;
-  font: 1.1rem var(--sans);
-  padding: 14px 14px;
-  border: 1.5px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-  color: var(--ink);
-}
-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(200, 80, 30, .18); }
-
-button, .button {
-  display: inline-block;
-  margin-top: 6px;
-  padding: 15px 18px;
-  font: 700 1.05rem var(--sans);
-  text-align: center;
-  text-decoration: none;
-  color: var(--accent-ink);
-  background: var(--accent);
+.button, button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  padding: 0 24px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 0;
+  font: 600 var(--step-body)/1 var(--font);
+  text-decoration: none;
+  cursor: pointer;
+  background: var(--ink);
+  color: var(--white);
+  transition: transform var(--t-press) var(--ease-out), background-color var(--t-hover) ease;
+}
+.button:active, button:active { transform: scale(0.97); }
+.f-blue .button, .f-blue button, .f-navy .button, .f-navy button { background: var(--yellow); color: var(--ink); }
+.f-blue .button:hover, .f-blue button:hover, .f-navy .button:hover, .f-navy button:hover { background: var(--white); }
+.f-paper .button:hover, .f-paper button:hover,
+.f-yellow .button:hover, .f-yellow button:hover,
+.f-green .button:hover, .f-green button:hover,
+.f-cyan .button:hover, .f-cyan button:hover { background: var(--navy); }
+
+.form { display: grid; gap: 10px; max-width: 30rem; }
+.form label { font-weight: 500; }
+.form input {
+  width: 100%;
+  min-height: 56px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 0;
+  background: var(--white);
+  color: var(--ink);
+  font: 500 1.125rem var(--font);
+}
+.form input::placeholder { color: #5b6573; }
+.form .row { display: grid; grid-template-columns: 1fr auto; gap: 0; }
+.form .row input { min-width: 0; }
+
+.error { font-weight: 600; background: var(--white); color: #a1001e; padding: 10px 14px; max-width: 30rem; }
+
+/* ---------------------------------------------------------- waterline hero (join page)
+   Two flat fields meet at a hard edge; the hunt's name sits across the seam,
+   blue above the waterline and white below it. */
+
+.waterline {
+  --seam: 46svh;
+  position: relative;
+  display: grid;
+  grid-template-rows: var(--seam) minmax(calc(100svh - var(--seam)), auto);
+}
+.wl-top { background: var(--paper); padding: 0 var(--margin); }
+.wl-bottom { display: grid; align-content: end; padding: 0 var(--margin) calc(28px + env(safe-area-inset-bottom)); padding-top: 120px; }
+.waterline .bar { color: var(--ink); }
+.wl-title {
+  position: absolute;
+  left: var(--margin);
+  right: var(--margin);
+  top: var(--seam);
+  pointer-events: none;
+  transform: translateY(calc(-1 * var(--cut)));
+  font-weight: 700;
+  /* as wide as the longest line allows, and short enough to stay under the top bar */
+  font-size: min(calc((100vw - 2 * var(--margin)) / (var(--fit) * 0.7)), calc(31svh - 40px));
+  line-height: 0.86;
+  letter-spacing: -0.03em;
+  text-transform: uppercase;
+  margin: 0;
+}
+.wl-title .copy { display: block; }
+.wl-title .copy.above { color: var(--blue); clip-path: inset(0 0 calc(100% - var(--cut)) 0); }
+.wl-title .copy.below { position: absolute; inset: 0; color: var(--white); clip-path: inset(var(--cut) 0 0 0); }
+.wl-title { --cut: 84%; }
+.lines .line { display: block; overflow: hidden; padding-bottom: 0.08em; margin-bottom: -0.08em; }
+.lines [data-line] { display: block; }
+
+.waterline .below-seam {
+  display: grid;
+  gap: 18px;
+  max-width: 30rem;
+}
+.waterline .below-seam p { font-size: var(--step-body); }
+
+/* ---------------------------------------------------------- the building, in blue */
+
+.photo { margin: 0 0 40px; background: var(--blue); }
+.photo img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; object-position: 50% 30%; filter: grayscale(1) contrast(1.15); mix-blend-mode: multiply; }
+.photo figcaption { padding: 14px 18px 18px; color: var(--white); font-weight: 500; }
+@media (min-width: 900px) {
+  .photo { display: grid; grid-template-columns: 8fr 4fr; align-items: end; }
+  .photo img { aspect-ratio: 21 / 9; }
+  .photo figcaption { padding: 22px; }
+}
+.credit { margin-top: 28px; max-width: 46ch; }
+.credit a { text-underline-offset: 3px; }
+
+/* ---------------------------------------------------------- how it works: tinted accordion */
+
+.how { padding-top: 96px; padding-bottom: 96px; }
+.how .intro { display: grid; gap: 18px; margin-bottom: 40px; }
+.stages { display: flex; flex-direction: column; }
+.stage { color: var(--white); }
+.stage:nth-child(1) { background: var(--navy); }
+.stage:nth-child(2) { background: var(--blue); }
+.stage:nth-child(3) { background: var(--tint-1); }
+.stage:nth-child(4) { background: var(--tint-2); color: var(--ink); }
+.stage summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  min-height: 64px;
+  padding: 0 20px;
+  font-weight: 600;
+  font-size: 1.125rem;
   cursor: pointer;
 }
-button:active, .button:active { transform: translateY(1px); }
-button.secondary, .button.secondary { background: transparent; color: var(--ink); border: 1.5px solid var(--ink); }
+.stage summary::-webkit-details-marker { display: none; }
+.stage summary::after { content: "+"; margin-left: auto; font-size: 1.5rem; font-weight: 400; transition: transform var(--t-hover) var(--ease-out); }
+.stage[open] summary::after { transform: rotate(45deg); }
+.stage p { padding: 0 20px 26px; max-width: 36ch; font-size: var(--step-body); }
 
-.error { margin: 0 0 14px; padding: 10px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-weight: 600; }
+@media (min-width: 900px) {
+  .how .intro { grid-template-columns: 5fr 1fr 6fr; align-items: end; }
+  .how .intro .text { grid-column: 3; }
+  .stages { flex-direction: row; height: 440px; }
+  .stage { flex: 0 0 13%; position: relative; overflow: hidden; transition: flex-basis 450ms var(--ease-out); }
+  .stage[open] { flex: 1 1 58%; }
+  .stage summary { position: absolute; inset: 0; align-items: flex-end; padding: 22px; min-height: 0; }
+  .stage:not([open]) summary { writing-mode: vertical-rl; transform: rotate(180deg); justify-content: flex-end; align-items: flex-end; font-size: 1.25rem; }
+  .stage:not([open]) summary::after { display: none; }
+  .stage[open] summary { align-items: flex-start; font-size: 2.5rem; letter-spacing: -0.02em; line-height: 1; }
+  .stage[open] summary::after { display: none; }
+  .stage p { position: absolute; left: 22px; bottom: 22px; padding: 0; }
+}
 
-.help { margin-top: 28px; border-top: 1px dashed var(--line); padding-top: 14px; color: var(--muted); font-size: .95rem; }
-.help summary { cursor: pointer; font-weight: 600; color: var(--ink); }
-.help p { margin: 10px 0; }
-.joincode { font: 700 1.05rem var(--mono); letter-spacing: .14em; color: var(--ink); background: var(--card); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); }
+/* ---------------------------------------------------------- clue chapter */
+
+.flash { padding-top: 22px; padding-bottom: 30px; display: grid; gap: 8px; }
+.flash .head { font-size: clamp(2rem, 9vw, 3.5rem); margin-top: 22px; }
+
+.clue-field {
+  min-height: 62svh;
+  display: grid;
+  align-content: start;
+  gap: 28px;
+  padding-bottom: 48px;
+}
+.teamline { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding-top: 26px; }
+.teamline h1 { font-size: var(--step-lead); font-weight: 700; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.teamline span { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 500; }
+.seeking { font-weight: 500; }
+.clue {
+  font-size: clamp(1.625rem, 6.6vw, 2.25rem);
+  line-height: 1.18;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 24ch;
+}
+
+/* The trace: the emblem's circuit, one pad per milestone, ending at the destination node. */
+.trace { width: 100%; height: auto; display: block; overflow: visible; }
+.trace .wire { stroke: currentColor; stroke-width: 5; stroke-linecap: round; fill: none; }
+.trace .wire.ahead { opacity: 0.35; }
+.trace .pad { fill: var(--blue); stroke: currentColor; stroke-width: 5; }
+.trace .pad.ahead { opacity: 0.45; }
+.trace .pad.done { fill: currentColor; }
+.trace .pad.next { stroke: var(--yellow); }
+.trace .ring { fill: none; stroke: var(--yellow); stroke-width: 3; transform-box: fill-box; transform-origin: center; }
+.trace text { fill: currentColor; font: 600 13px var(--font); }
+.f-green .trace .pad { fill: var(--green); }
+.f-green .trace .pad.done { fill: currentColor; }
+.f-green .trace .pad.core { fill: var(--green); stroke: none; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .trace .ring { animation: ping 1.8s var(--ease-out) infinite; }
+}
+@keyframes ping { from { transform: scale(1); opacity: 1; } to { transform: scale(2.2); opacity: 0; } }
+
+/* ---------------------------------------------------------- finish */
+
+.finish { min-height: 100svh; display: grid; grid-template-rows: auto 1fr auto; padding-bottom: 40px; }
+.finish .rank { font-weight: 700; font-size: clamp(6rem, 42vw, 16rem); line-height: 0.82; letter-spacing: -0.05em; margin: 28px 0 18px; }
+.finish dl { display: flex; gap: 40px; margin-top: 28px; }
+.finish dt { font-weight: 500; }
+.finish dd { font-weight: 700; font-size: var(--step-lead); font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------- single-state screens */
+
+.state { min-height: 100svh; display: grid; grid-template-rows: auto 1fr; padding-bottom: 40px; }
+.state .body { align-self: center; display: grid; gap: 22px; padding: 48px 0; }
+.state .huge { font-weight: 700; font-size: clamp(3.25rem, 17vw, 8rem); line-height: 0.88; letter-spacing: -0.04em; }
+
+/* ---------------------------------------------------------- team code + rejoin */
+
+.code-field { padding-top: 56px; padding-bottom: 64px; display: grid; gap: 16px; }
+.joincode { font-weight: 700; font-size: clamp(2.75rem, 14vw, 5rem); letter-spacing: 0.02em; line-height: 1; font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------- footer: the name returns */
+
+.close { padding-top: 56px; padding-bottom: 0; overflow: hidden; }
+.close .row { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.close .logo { height: 28px; }
+.close .name {
+  display: block;
+  margin-top: 40px;
+  font-weight: 700;
+  font-size: min(14rem, calc(min(100vw - 2 * var(--margin), 72rem) / (var(--fit) * 0.6)));
+  line-height: 0.8;
+  letter-spacing: -0.05em;
+  white-space: nowrap;
+  margin-bottom: -0.12em; /* the baseline sits on the screen's bottom edge */
+}
+
+/* ---------------------------------------------------------- motion */
+
+@media (prefers-reduced-motion: no-preference) {
+  .js .lines [data-line] {
+    transform: translateY(105%);
+    animation: line-up 900ms var(--ease-out) forwards;
+    animation-delay: calc(var(--i) * 110ms + 150ms);
+  }
+  .js .rise > * {
+    opacity: 0;
+    transform: translateY(22px);
+    animation: rise 700ms var(--ease-out) forwards;
+  }
+  .js .rise > :nth-child(1) { animation-delay: 80ms; }
+  .js .rise > :nth-child(2) { animation-delay: 160ms; }
+  .js .rise > :nth-child(3) { animation-delay: 240ms; }
+  .js .rise > :nth-child(4) { animation-delay: 320ms; }
+  .js .rise > :nth-child(5) { animation-delay: 400ms; }
+  .js .waterline .rise > :nth-child(1) { animation-delay: 650ms; }
+  .js .stages.reveal > * { transform: translateX(-24px); }
+  .js .stages.reveal.in > * { transform: none; }
+  .js .stages.reveal > .stage { transition: opacity 700ms var(--ease-out), transform 700ms var(--ease-out), flex-basis 450ms var(--ease-out); }
+  .js .waterline .rise > :nth-child(2) { animation-delay: 720ms; }
+  .js .waterline .rise > :nth-child(3) { animation-delay: 790ms; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .js .reveal > * { opacity: 0; transform: translateY(24px); transition: opacity 700ms var(--ease-out), transform 700ms var(--ease-out); }
+  .js .reveal.in > * { opacity: 1; transform: none; }
+  .js .reveal.in > :nth-child(2) { transition-delay: 80ms; }
+  .js .reveal.in > :nth-child(3) { transition-delay: 160ms; }
+  .js .reveal.in > :nth-child(4) { transition-delay: 240ms; }
+  .js .reveal.in > :nth-child(5) { transition-delay: 320ms; }
+  .js .photo.reveal > img { transform: scale(1.06); }
+  .js .photo.reveal.in > img { transform: none; transition-duration: 1400ms; }
+}
+@keyframes line-up { to { transform: none; } }
+@keyframes rise { to { opacity: 1; transform: none; } }

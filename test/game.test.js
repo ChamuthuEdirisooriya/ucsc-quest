@@ -125,7 +125,7 @@ test('decoy cards at a location do nothing; the real card moves after it is scan
   for (const fake of fakes(db, first)) {
     const r = game.scanCard(db, fake, team);
     assert.equal(r.type, 'decoy');
-    assert.match(r.message, /Not this one/);
+    assert.match(r.message, /real code is hiding/);
   }
   assert.equal(game.getTeamByToken(db, huntId, team.token).progress, 0);
 

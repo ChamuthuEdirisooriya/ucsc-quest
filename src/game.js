@@ -17,11 +17,11 @@ export function randomCode(length) {
   return out;
 }
 
-export const PATH_COLORS = ['#e4572e', '#2e86ab', '#3bb273', '#9b5de5', '#f4a259', '#e84393', '#17a2b8', '#7a9e1a', '#c0392b', '#5352ed'];
+export const PATH_COLORS = ['#00629b', '#e87722', '#78be20', '#ba0c2f', '#00b5e2', '#002855', '#ffc72c', '#4f7f2a', '#8b5e3c', '#5b6770'];
 
-const DEFAULT_WELCOME = 'Welcome, explorers! Pick a team name to receive your first clue. Keep using this same phone for every QR code you scan.';
+const DEFAULT_WELCOME = 'Pick a team name to get your first clue. Use this same phone for every code you scan.';
 const DEFAULT_FINISH = 'You found the final destination. Congratulations!';
-const DEFAULT_DECOY = 'Not this one! The real code is hiding close by. Keep looking.';
+const DEFAULT_DECOY = 'The real code is hiding close by. Keep looking.';
 export const MAX_CARDS = 12;
 
 /* ---------------------------------------------------------------- hunts */

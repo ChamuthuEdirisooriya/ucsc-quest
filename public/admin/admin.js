@@ -87,7 +87,7 @@ const cardSuffix = (s) => (s.card_total > 1 && s.card_slot ? ` · card ${s.card_
 
 function modal(title, content, { onClose } = {}) {
   const dlg = h('dialog', {},
-    h('header', {}, h('h2', {}, title), h('button', { class: 'btn ghost', onclick: () => dlg.close() }, '✕')),
+    h('header', {}, h('h2', {}, title), h('button', { class: 'btn ghost', onclick: () => dlg.close() }, 'Close')),
     h('div', { class: 'body' }, content),
   );
   dlg.addEventListener('close', () => { dlg.remove(); onClose?.(); });
@@ -120,7 +120,9 @@ route();
 function shell(...content) {
   app.replaceChildren(
     h('div', { class: 'topbar' },
-      h('a', { class: 'brand', href: '#/' }, 'Hunt Control'),
+      h('a', { class: 'brand', href: '#/', 'aria-label': 'All hunts' },
+        h('span', { class: 'logo', role: 'img', 'aria-label': 'UCSC IEEE Student Branch' }),
+        h('span', {}, 'Quest control')),
       h('div', { class: 'spacer' }),
       h('button', { class: 'btn ghost small', onclick: async () => { await api('POST', '/logout'); location.hash = '#/login'; } }, 'Sign out'),
     ),
@@ -132,17 +134,18 @@ function shell(...content) {
 
 function renderLogin() {
   const pw = h('input', { type: 'password', autocomplete: 'current-password', required: true, autofocus: true });
-  const form = h('form', { class: 'panel login', onsubmit: async (e) => {
+  const form = h('form', { class: 'login', onsubmit: async (e) => {
     e.preventDefault();
     const ok = await attempt(() => api('POST', '/login', { password: pw.value }));
     if (ok) location.hash = '#/';
   } },
-    h('h1', {}, 'Hunt Control'),
-    h('p', {}, 'Organiser sign-in'),
-    h('label', { class: 'field' }, h('span', {}, 'Password'), pw),
-    h('button', { class: 'btn primary', style: { width: '100%' } }, 'Sign in'),
+    h('span', { class: 'logo', role: 'img', 'aria-label': 'UCSC IEEE Student Branch' }),
+    h('h1', {}, 'Quest control'),
+    h('p', {}, 'Sign in to set clues, print codes and follow every team.'),
+    h('label', { class: 'field' }, h('span', {}, 'Organiser password'), pw),
+    h('button', { class: 'btn primary' }, 'Sign in'),
   );
-  app.replaceChildren(form);
+  app.replaceChildren(h('main', { class: 'login-field' }, form));
   pw.focus();
 }
 
@@ -150,11 +153,11 @@ function renderLogin() {
 
 async function renderHunts() {
   const hunts = await api('GET', '/hunts');
-  const name = h('input', { placeholder: 'Campus Quest 2026', required: true });
+  const name = h('input', { placeholder: 'UCSC Quest', required: true });
   const milestones = h('input', { type: 'number', min: 1, max: 50, value: 5, required: true, style: { width: '90px' } });
 
   shell(
-    h('div', { class: 'section-title' }, h('h2', {}, 'Your hunts')),
+    h('div', { class: 'section-title', style: { marginTop: '8px' } }, h('h2', {}, 'Hunts')),
     h('form', { class: 'panel', style: { marginBottom: '22px' }, onsubmit: async (e) => {
       e.preventDefault();
       const res = await attempt(() => api('POST', '/hunts', { name: name.value, milestones: Number(milestones.value) }));
@@ -215,7 +218,7 @@ async function renderHunt(id, tab) {
         h('div', { class: 'sub' }, `${hunt.milestones} milestones per team · ${data.paths.length} paths · ${data.team_count} teams`),
       ),
       h('div', { class: 'actions' },
-        startCode ? h('a', { class: 'btn ghost', href: startCode.cards[0]?.url, target: '_blank', title: 'Open the start QR link like a player would' }, 'Test as player ↗') : null,
+        startCode ? h('a', { class: 'btn ghost', href: startCode.cards[0]?.url, target: '_blank', title: 'Open the start QR link like a player would' }, 'Test as player') : null,
         statusActions,
       ),
     ),
@@ -242,16 +245,17 @@ function issueList(issues, filter = () => true) {
 
 /* ------------------------------------------------------------ live tab */
 
+// Each scan result is marked by a pad (the emblem's ring) in the result's colour.
 const SCAN_TEXT = {
-  registered: ['✓', 'registered'],
-  advance: ['✓', 'found'],
-  finish: ['★', 'FINISHED at'],
-  repeat: ['↺', 're-scanned'],
-  wrong: ['✕', 'wrong QR'],
-  ahead: ['✕', 'skipped ahead to'],
-  early: ['✕', 'too early at'],
-  decoy: ['?', 'hit decoy'],
-  'no-team': ['·', 'scanned without a team'],
+  registered: ['', 'registered'],
+  advance: ['', 'found'],
+  finish: ['', 'finished at'],
+  repeat: ['', 're-scanned'],
+  wrong: ['', 'scanned a wrong code at'],
+  ahead: ['', 'skipped ahead to'],
+  early: ['', 'was too early at'],
+  decoy: ['', 'hit a decoy at'],
+  'no-team': ['', 'scanned without a team'],
 };
 
 async function liveTab(data, root) {
@@ -291,7 +295,7 @@ async function liveTab(data, root) {
     const board = live.teams.length ? h('div', { class: 'panel board', style: { marginTop: '18px' } },
       h('header', {}, h('h3', {}, 'Race board'), h('span', { class: 'hint' }, 'Teams placed by the milestone they are looking for')),
       h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Path'), Array.from({ length: n }, (_, i) => h('th', {}, `→ ${i + 1}`)), h('th', {}, '→ ★'), h('th', {}, 'Done'))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Path'), Array.from({ length: n }, (_, i) => h('th', {}, `Seeking ${i + 1}`)), h('th', {}, 'Seeking the end'), h('th', {}, 'Done'))),
         h('tbody', {}, live.paths.map((p) => h('tr', {},
           h('td', {}, h('span', { class: 'chip' }, h('i', { style: { background: p.color } }), p.name)),
           Array.from({ length: n + 2 }, (_, col) => h('td', {},
@@ -353,19 +357,19 @@ async function openTeam(teamId, live, onChange) {
 
   const dlg = modal(team.name, [
     h('div', { class: 'row', style: { marginBottom: '16px' } },
-      h('span', { class: 'muted' }, 'Team code '), h('b', { class: 'mono' }, team.join_code),
+      h('span', { class: 'muted' }, 'Team code '), h('b', { class: 'code' }, team.join_code),
       h('span', { class: 'muted' }, ` · started ${clock(team.started_at)}`),
       team.finished_at ? h('span', { class: 'pill live' }, `finished in ${duration(team.started_at, team.finished_at)}`) : null),
     h('ol', { class: 'route', style: { '--c': color } }, route.map((r) =>
       h('li', { class: r.reached ? 'done' : '' },
-        h('span', { class: 'dot' }, r.position ?? '★'),
+        h('span', { class: 'dot' }, r.position ?? ''),
         h('span', {}, r.label || h('em', { class: 'muted' }, 'not set')),
         h('time', {}, r.at ? clock(r.at) : '')))),
     h('details', { style: { marginBottom: '16px' } },
       h('summary', { class: 'muted', style: { cursor: 'pointer' } }, `All ${detail.scans.length} scans`),
       h('ul', { class: 'route', style: { marginTop: '8px' } }, detail.scans.map((s) => {
         const [icon, verb] = SCAN_TEXT[s.result] ?? ['·', s.result];
-        return h('li', {}, h('span', { class: 'dot' }, icon), h('span', {}, `${verb} ${s.result === 'registered' ? '' : s.code_label + cardSuffix(s)}`), h('time', {}, clock(s.at)));
+        return h('li', {}, h('span', { class: `dot ${s.result}` }, icon), h('span', {}, `${verb} ${s.result === 'registered' ? '' : s.code_label + cardSuffix(s)}`), h('time', {}, clock(s.at)));
       }))),
     h('div', { class: 'panel body', style: { background: '#fbfaf7' } },
       h('label', { class: 'field' }, h('span', {}, 'Name'), name),
@@ -400,7 +404,7 @@ async function pathsTab(data, root) {
 
   const generate = async () => {
     if (replace.checked && paths.length && !confirm('Replace all existing paths? Their clues will be lost.')) return;
-    if (await attempt(() => api('POST', `/hunts/${hunt.id}/generate-paths`, { count: Number(count.value), replace: replace.checked }), 'Paths generated — now write the clues')) route();
+    if (await attempt(() => api('POST', `/hunts/${hunt.id}/generate-paths`, { count: Number(count.value), replace: replace.checked }), 'Paths generated. Now write the clues.')) route();
   };
 
   // Which checkpoint is used where (for the overlap matrix and dropdown hints)
@@ -472,7 +476,7 @@ async function pathsTab(data, root) {
         if (i > 0) leadLabels[i - 1].replaceChildren(leadsTo(i - 1));
         markDirty();
       } },
-        h('option', { value: '' }, '— choose checkpoint —'),
+        h('option', { value: '' }, 'Choose a checkpoint'),
         checkpoints.map((c) => {
           const other = usageText(c.id, p.id);
           return h('option', { value: c.id, selected: c.id === s.code_id }, `${codeName(c)}${other ? `  (also ${other})` : ''}`);
@@ -505,7 +509,7 @@ async function pathsTab(data, root) {
         } }, 'Delete')),
       h('div', { class: 'steps' },
         h('div', { class: 'step' },
-          h('div', { class: 'num start' }, '▶'),
+          h('div', { class: 'num start' }, 'Go'),
           h('div', { class: 'where' }, h('b', {}, 'Start QR'), h('small', {}, 'Shared by every team. Shown right after registering.')),
           h('div', {},
             h('div', { class: 'lead' }, leadsTo(-1)),
@@ -513,7 +517,7 @@ async function pathsTab(data, root) {
               oninput: (e) => { draft.start_clue = e.target.value; markDirty(); } }))),
         stepRows,
         h('div', { class: 'step' },
-          h('div', { class: 'num start' }, '★'),
+          h('div', { class: 'num start' }, 'End'),
           h('div', { class: 'where' }, h('b', {}, 'Final destination'), h('small', {}, 'Shared by every team. Shows the finish message.')),
           h('div', { class: 'muted', style: { paddingTop: '6px' } }, 'Edit the finish message on the Settings tab.'))),
       h('div', { class: 'path-foot' }, saveBtn, h('span', { class: 'muted' }, 'Unsaved changes are highlighted.')),
@@ -563,10 +567,10 @@ async function codesTab(data, root) {
 
   const cardModal = (c, card) => modal(`${codeName(c)}${c.cards.length > 1 ? ` · card ${card.slot} of ${c.cards.length}` : ''}`, [
     h('img', { class: 'qr-big', src: `/api/cards/${card.id}/qr.svg`, alt: `QR ${card.token}` }),
-    h('p', { class: 'mono muted', style: { textAlign: 'center', wordBreak: 'break-all' } }, card.url),
+    h('p', { class: 'muted', style: { textAlign: 'center', wordBreak: 'break-all' } }, card.url),
     h('div', { class: 'row', style: { justifyContent: 'center' } },
       h('button', { class: 'btn', onclick: () => navigator.clipboard.writeText(card.url).then(() => toast('Link copied')) }, 'Copy link'),
-      h('a', { class: 'btn', href: card.url, target: '_blank' }, 'Open as a player ↗')),
+      h('a', { class: 'btn', href: card.url, target: '_blank' }, 'Open as a player')),
     c.cards.length > 1 ? h('p', { class: 'muted', style: { textAlign: 'center', fontSize: '12px' } }, 'Opening the link counts as a scan. If this is the real card, the real QR moves to another card.') : null,
   ]);
 
@@ -616,7 +620,7 @@ async function codesTab(data, root) {
         multi ? h('button', { class: 'btn small ghost', onclick: async () => {
           const res = await attempt(() => api('POST', `/codes/${c.id}/shuffle`), 'Real QR moved');
           if (res) refreshReal();
-        } }, '⤮ Shuffle now') : null);
+        } }, 'Shuffle now') : null);
     }
 
     return h('div', { class: 'panel code' },
@@ -663,7 +667,7 @@ async function codesTab(data, root) {
   const allCards = h('input', { type: 'number', min: 1, max: 12, value: hunt.decoys_per_location + 1 });
   const decoyLabel = h('input', { placeholder: 'Placement (optional), e.g. Near the fountain' });
   const decoyCount = h('input', { type: 'number', min: 1, max: 50, value: 1, style: { width: '80px' } });
-  const decoyMessage = h('textarea', { class: 'clue', rows: 2, value: 'Nice try — this one is a decoy! Head back to your clue.' });
+  const decoyMessage = h('textarea', { class: 'clue', rows: 2, value: 'Nice try, this one is a decoy. Head back to your clue.' });
   const addDecoys = async () => {
     const items = Array.from({ length: Number(decoyCount.value) || 1 }, () => ({ label: decoyLabel.value, message: decoyMessage.value }));
     if (await attempt(() => api('POST', `/hunts/${hunt.id}/codes`, { kind: 'decoy', items }), `${items.length} decoy${items.length > 1 ? 's' : ''} created`)) route();
@@ -680,7 +684,7 @@ async function codesTab(data, root) {
         } }, 'Apply')),
       h('button', { class: 'btn', onclick: async () => {
         if (await attempt(() => api('POST', `/hunts/${hunt.id}/shuffle`), 'Every real QR moved')) refreshReal();
-      } }, '⤮ Shuffle all now')),
+      } }, 'Shuffle all now')),
     h('p', { class: 'muted', style: { marginTop: '-6px' } },
       `At each spot with several cards, only one card is real. The real one moves to a random other card every ${hunt.shuffle_min}–${hunt.shuffle_max} minutes, and straight after anyone scans it. The others show the decoy message. Change this on the Settings tab.`),
 
@@ -760,7 +764,7 @@ async function settingsTab(data, root) {
     h('div', { class: 'panel', style: { marginBottom: '18px' } },
       h('header', {}, h('h3', {}, 'QR link address'), h('span', { class: 'hint' }, 'Applies to all hunts')),
       h('div', { class: 'body' },
-        h('p', { style: { marginTop: 0 } }, 'Every QR code opens ', h('b', { class: 'mono' }, `${settings.effective_base_url}/q/…`), '. Phones must be able to reach this address — ', h('b', {}, 'localhost will not work'), ' on a phone. Set it before printing.'),
+        h('p', { style: { marginTop: 0 } }, 'Every QR code opens ', h('b', {}, `${settings.effective_base_url}/q/…`), '. Phones must be able to reach this address, so ', h('b', {}, 'localhost will not work'), ' on a phone. Set it before printing.'),
         h('label', { class: 'field' }, h('span', {}, 'Public base URL (leave empty to use the address you are browsing on)'), baseUrl),
         settings.suggestions.length ? h('p', { class: 'muted' }, 'On this Wi-Fi network: ', settings.suggestions.map((s) =>
           h('button', { class: 'btn small', style: { margin: '2px' }, onclick: () => (baseUrl.value = s) }, s))) : null,
