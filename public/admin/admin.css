@@ -122,6 +122,10 @@ input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--blue); }
 .field > small { color: var(--muted); font-size: 14px; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .grow { flex: 1; }
+.row > .field.grow { flex: 1 1 14rem; } /* a field that grows still wraps before it gets cramped */
+/* a checkbox and its words stay on one line together */
+.check { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
+.check > input { flex: none; }
 .muted { color: var(--muted); }
 .tnum { font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
 .empty { padding: 40px 20px; color: var(--muted); }
@@ -171,6 +175,8 @@ input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--blue); }
 .stats-row .stat:first-child { background: var(--blue); color: #fff; }
 .stats-row .stat:first-child span { color: rgba(255, 255, 255, 0.85); }
 .live-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 22px; align-items: start; }
+.live-grid > * { min-width: 0; } /* wide tables scroll inside their panel, never the page */
+.table-scroll { overflow-x: auto; }
 
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-size: 14px; color: var(--muted); font-weight: 600; padding: 12px 14px; border-bottom: 1.5px solid var(--line); white-space: nowrap; }
@@ -181,6 +187,8 @@ tbody tr.click:hover { background: var(--yellow-soft); }
 .rank { font-weight: 700; font-size: 20px; width: 40px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
 .rank.top { color: var(--ink); background: var(--yellow); }
 .team-name { font-weight: 700; }
+.team-link { padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.team-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 .team-name small { display: block; font-weight: 500; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 .bar { display: flex; gap: 3px; min-width: 150px; align-items: center; }
@@ -209,7 +217,7 @@ tbody tr.click:hover { background: var(--yellow-soft); }
 .board table { min-width: 640px; }
 .board td { vertical-align: top; min-width: 90px; }
 .board td:first-child { min-width: 120px; }
-.board .tchip { display: inline-block; margin: 2px; padding: 2px 9px; background: var(--c); color: var(--c-ink, #fff); font-size: 13px; font-weight: 600; cursor: pointer; transition: transform 140ms var(--ease-out); }
+.board .tchip { display: inline-block; margin: 2px; padding: 2px 9px; border: 0; background: var(--c); color: var(--c-ink, #fff); font: 600 13px/1.5 var(--font); text-align: left; cursor: pointer; transition: transform 140ms var(--ease-out); }
 .board .tchip:hover { transform: translateY(-2px); }
 
 /* ---------- paths */
@@ -282,7 +290,17 @@ dialog .body { padding: 20px; }
 .route .dot.decoy { background: var(--yellow); border-color: #e0a800; }
 .route .dot.finish { background: var(--green); border-color: var(--ink); }
 .route time { margin-left: auto; color: var(--muted); font-size: 14px; }
-.qr-big { display: block; width: 100%; max-width: 360px; margin: 0 auto; }
+/* QR preview: the whole code always fits on screen, so another phone can scan it straight off the dialog
+   (100dvh less the dialog's margin, header and padding). */
+.qr-big { display: block; width: min(100%, 360px, calc(100dvh - 170px)); aspect-ratio: 1; margin: 0 auto; }
+.qr-side { display: grid; gap: 12px; justify-items: center; margin-top: 14px; }
+.qr-link { text-align: center; font-size: 14px; color: var(--muted); }
+.small-print { margin: 0; text-align: center; font-size: 13px; }
+@media (max-height: 560px) and (orientation: landscape) {
+  .qr-dialog { width: min(760px, calc(100vw - 32px)); }
+  .qr-dialog .body { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 22px; align-items: center; }
+  .qr-dialog .qr-side { margin-top: 0; justify-items: stretch; }
+}
 
 #toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(20px); opacity: 0; transition: opacity 200ms ease, transform 240ms var(--ease-out); padding: 12px 18px; background: var(--ink); color: #fff; font-weight: 600; pointer-events: none; z-index: 100; max-width: calc(100vw - 32px); }
 #toast.show { opacity: 1; transform: translateX(-50%); }
@@ -292,6 +310,10 @@ dialog .body { padding: 20px; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
+.show-sm { display: none; }
+@media (max-width: 700px) {
+  .hide-md { display: none; }
+}
 @media (max-width: 960px) {
   .live-grid { grid-template-columns: 1fr; }
   .stats-row { grid-template-columns: repeat(3, 1fr); }
@@ -310,4 +332,10 @@ dialog .body { padding: 20px; }
   .card-thumb img { width: 54px; height: 54px; }
   .panel.code .side { flex-direction: row; justify-content: flex-start; flex-wrap: wrap; }
   .hide-sm { display: none; }
+  .show-sm { display: inline; }
+  /* the team table fits a phone: path shown under the name, tighter cells, a shorter bar */
+  table.teams th, table.teams td { padding: 10px 8px; }
+  table.teams .rank { width: 32px; font-size: 17px; }
+  table.teams .bar { min-width: 64px; }
+  table.teams .misses { white-space: nowrap; }
 }

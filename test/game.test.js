@@ -172,19 +172,108 @@ test('cannot go live with incomplete paths or reuse a checkpoint in one path', (
   assert.throws(() => game.updateHunt(db, huntId, { status: 'live' }), /before going live/);
 });
 
+// Pin when each team's advances happened (scans and the team's own record agree).
+function arrivedAt(db, team, ...times) {
+  const advances = db.prepare("SELECT id FROM scans WHERE team_id = ? AND result = 'advance' ORDER BY id").all(team.id);
+  advances.forEach((s, i) => db.prepare('UPDATE scans SET at = ? WHERE id = ?').run(times[i], s.id));
+  db.prepare('UPDATE teams SET progress_at = ? WHERE id = ?').run(times.at(-1), team.id);
+}
+
 test('the live board ranks equal progress by who reached it first, not by the last scan', () => {
   const { db, huntId, start, decoy } = setup();
-  let early = game.registerTeam(db, huntId, 'Early', start);
-  let late = game.registerTeam(db, huntId, 'Late', start);
+  // Registered first, so a tie-break on id alone would wrongly put Late ahead.
+  const late = game.registerTeam(db, huntId, 'Late', start);
+  const early = game.registerTeam(db, huntId, 'Early', start);
   game.scanCard(db, real(db, stepsOf(db, huntId, early)[0].code_id), early);
   game.scanCard(db, real(db, stepsOf(db, huntId, late)[0].code_id), late);
-  // Make the order of arrival unambiguous, then let Early scan a decoy afterwards.
-  db.prepare("UPDATE scans SET at = '2026-10-17T10:05:00.000Z' WHERE team_id = ? AND result = 'advance'").run(early.id);
-  db.prepare("UPDATE scans SET at = '2026-10-17T10:20:00.000Z' WHERE team_id = ? AND result = 'advance'").run(late.id);
-  game.scanCard(db, decoy, early);
-  db.prepare("UPDATE teams SET last_seen_at = '2026-10-17T10:25:00.000Z' WHERE id = ?").run(early.id);
-  db.prepare("UPDATE teams SET last_seen_at = '2026-10-17T10:20:00.000Z' WHERE id = ?").run(late.id);
+  arrivedAt(db, early, '2026-10-17T10:05:00.000Z');
+  arrivedAt(db, late, '2026-10-17T10:20:00.000Z');
+  game.scanCard(db, decoy, early); // a later decoy scan must not cost Early its place
   assert.deepEqual(game.liveData(db, huntId).teams.map((t) => t.name), ['Early', 'Late']);
+});
+
+test('moving a team back keeps the time it first reached that milestone', () => {
+  const { db, huntId, start } = setup({ paths: 1 });
+  const a = game.registerTeam(db, huntId, 'A', start);
+  const b = game.registerTeam(db, huntId, 'B', start);
+  const steps = stepsOf(db, huntId, a);
+  game.scanCard(db, real(db, steps[0].code_id), a);
+  game.scanCard(db, real(db, steps[1].code_id), a);
+  game.scanCard(db, real(db, steps[0].code_id), b);
+  arrivedAt(db, a, '2026-10-17T10:00:00.000Z', '2026-10-17T10:10:00.000Z');
+  arrivedAt(db, b, '2026-10-17T10:05:00.000Z');
+  game.updateTeam(db, a.id, { progress: 1 }); // the organiser takes milestone 2 away
+  assert.deepEqual(game.liveData(db, huntId).teams.map((t) => [t.name, t.progress]), [['A', 1], ['B', 1]]);
+});
+
+test('a dialog left open cannot undo progress the team made since', () => {
+  const { db, huntId, start, finish } = setup();
+  const team = game.registerTeam(db, huntId, 'Runners', start);
+  const seen = { path_id: team.path_id, progress: 0, finished_at: null };
+  for (const s of stepsOf(db, huntId, team)) game.scanCard(db, real(db, s.code_id), team);
+  game.scanCard(db, real(db, finish), team);
+
+  // The stale dialog still shows 0: correcting progress from it is refused...
+  assert.throws(() => game.updateTeam(db, team.id, { progress: 0, expect: seen }), (err) => err.status === 409);
+  // ...but a rename alone goes through and leaves the finish alone.
+  game.updateTeam(db, team.id, { name: 'Runners Up', expect: seen });
+  const after = db.prepare('SELECT name, progress, finished_at FROM teams WHERE id = ?').get(team.id);
+  assert.equal(after.name, 'Runners Up');
+  assert.equal(after.progress, 3);
+  assert.ok(after.finished_at);
+});
+
+test('checkpoints a team has found stay fixed, and a followed path stays complete', () => {
+  const { db, huntId, start } = setup({ paths: 1 });
+  const team = game.registerTeam(db, huntId, 'Movers', start);
+  const steps = stepsOf(db, huntId, team);
+  game.scanCard(db, real(db, steps[0].code_id), team);
+  const edit = (order, clue = 'x') => game.savePath(db, team.path_id, { steps: order.map((i) => ({ code_id: steps[i].code_id, clue })) });
+
+  assert.throws(() => edit([1, 0, 2]), /milestone 1.*already found/i); // swapping a found stop
+  assert.throws(() => game.savePath(db, team.path_id, { steps: [] }), /already found/); // clearing the route
+  assert.throws(() => edit([0]), /stay complete/); // clearing the stops still ahead
+  assert.throws(() => edit([0, 1, 2], ''), /stay complete/); // blanking the clues
+  edit([0, 2, 1]); // stops not found yet can still move
+  // The team was not credited with anything it did not find.
+  assert.equal(game.scanCard(db, real(db, steps[0].code_id), team).type, 'again');
+  assert.equal(game.scanCard(db, real(db, steps[2].code_id), team).type, 'found');
+});
+
+test('a live hunt always keeps a path that new teams can be given', () => {
+  const { db, huntId } = setup({ paths: 2 });
+  const [a, b] = game.getBundle(db, huntId).paths.map((p) => p.id);
+  assert.throws(() => game.generatePaths(db, huntId, 2, { replace: true }), /no ready path/);
+  game.deletePath(db, a);
+  assert.throws(() => game.deletePath(db, b), /no ready path/);
+  assert.throws(() => game.savePath(db, b, { start_clue: '' }), /no ready path/);
+  assert.equal(game.getBundle(db, huntId).paths.length, 1);
+  // Paused, the organiser can rebuild the paths from scratch.
+  game.updateHunt(db, huntId, { status: 'draft' });
+  game.generatePaths(db, huntId, 2, { replace: true });
+});
+
+test('teams can only be moved to a path that is ready', () => {
+  const { db, huntId, start } = setup();
+  const team = game.registerTeam(db, huntId, 'Wanderers', start);
+  const empty = game.createPath(db, huntId);
+  assert.throws(() => game.updateTeam(db, team.id, { path_id: empty }), /not ready/);
+  const other = game.getBundle(db, huntId).paths.find((p) => p.id !== team.path_id && p.id !== empty);
+  game.updateTeam(db, team.id, { path_id: other.id });
+  assert.equal(db.prepare('SELECT path_id FROM teams WHERE id = ?').get(team.id).path_id, other.id);
+});
+
+test('generated paths never repeat a route while another route is free', () => {
+  for (let run = 0; run < 40; run++) {
+    const db = openDb(':memory:');
+    const huntId = game.createHunt(db, { name: 'Routes', milestones: 2 });
+    game.createCodes(db, huntId, 'checkpoint', [{ label: 'a' }, { label: 'b' }, { label: 'c' }]);
+    game.generatePaths(db, huntId, 4);
+    game.generatePaths(db, huntId, 2); // 3 checkpoints, 2 stops: exactly 6 routes exist
+    const routes = game.getBundle(db, huntId, { cards: false }).paths.map((p) => p.steps.map((s) => s.code_id).join());
+    assert.equal(new Set(routes).size, 6, `run ${run}: ${routes.join(' | ')}`);
+    assert.throws(() => game.generatePaths(db, huntId, 1), /only 6 different routes.*at most 0 more/);
+  }
 });
 
 test('changing milestones on a live hunt is refused when it would break every path', () => {

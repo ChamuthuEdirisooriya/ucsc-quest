@@ -303,6 +303,26 @@ export function decoyPage(hunt, message, team) {
   return layout({ title: hunt.name, top: 'yellow', body });
 }
 
+/** A phone already on one team entered another team's code: switch only if they confirm. */
+export function switchTeamPage(hunt, current, target) {
+  const body = `
+  <main class="field f-yellow state">
+    <div class="inner">${bar(`<span>${esc(current.name)}</span>`)}</div>
+    <div class="inner body rise">
+      <h1 class="huge">Switch teams?</h1>
+      <p class="lead">This phone is on ${esc(current.name)}. If you switch, its scans count for ${esc(target.name)} instead.</p>
+      <form method="post" action="/h/${hunt.id}/rejoin" class="form">
+        <input type="hidden" name="code" value="${esc(target.join_code)}">
+        <input type="hidden" name="confirm" value="1">
+        <button type="submit">Switch to ${esc(target.name)}</button>
+      </form>
+      <p><a href="/play/${hunt.id}">Stay on ${esc(current.name)}</a></p>
+    </div>
+  </main>
+  ${close(hunt)}`;
+  return layout({ title: `Switch teams · ${hunt.name}`, top: 'yellow', body });
+}
+
 export function messagePage(title, text, { huntName = '', link = null } = {}) {
   const body = `
   <main class="field f-navy state">
@@ -359,7 +379,9 @@ export function printPage(hunt, cards, { labels }) {
   }
 </style></head>
 <body>
-  <div class="top"><button onclick="print()">Print</button><span>${cards.length} QR cards. Cut along the dashed lines.${labels ? ' Cards marked “card x of y” go together at the same spot; cut off the yellow placement notes first.' : ''}</span></div>
+  <div class="top">${cards.length
+    ? `<button onclick="print()">Print</button><span>${cards.length} QR cards. Cut along the dashed lines.${labels ? ' Cards marked “card x of y” go together at the same spot; cut off the yellow placement notes first.' : ''}</span>`
+    : '<span>No QR cards match this selection. Go back and tick at least one kind of card.</span>'}</div>
   <div class="grid">${items}</div>
 </body></html>`;
 }

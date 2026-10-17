@@ -280,7 +280,7 @@ a { color: inherit; }
 
 /* ---------------------------------------------------------- finish */
 
-.finish { min-height: 100svh; display: grid; grid-template-rows: auto 1fr auto; padding-bottom: 40px; }
+.finish { min-height: 100svh; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr auto; padding-bottom: 40px; }
 .finish .rank { font-weight: 700; font-size: clamp(6rem, 42vw, 16rem); line-height: 0.82; letter-spacing: -0.05em; margin: 28px 0 18px; }
 .finish dl { display: flex; gap: 40px; margin-top: 28px; }
 .finish dt { font-weight: 500; }
@@ -288,7 +288,7 @@ a { color: inherit; }
 
 /* ---------------------------------------------------------- single-state screens */
 
-.state { min-height: 100svh; display: grid; grid-template-rows: auto 1fr; padding-bottom: 40px; }
+.state { min-height: 100svh; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; padding-bottom: 40px; }
 .state .body { align-self: center; display: grid; gap: 22px; padding: 48px 0; }
 .state .huge { font-weight: 700; font-size: clamp(3.25rem, 17vw, 8rem); line-height: 0.88; letter-spacing: -0.04em; }
 

@@ -41,3 +41,10 @@ test('finish screen announces the place', () => {
   assert.match(html, /2nd<span class="sr-only"> place<\/span>/);
   assert.match(html, /42m 0s/);
 });
+
+test('the team switch page names both teams safely', () => {
+  const html = views.switchTeamPage({ id: 1, name: 'UCSC Quest' }, { name: '<Old>' }, { name: 'New & Co', join_code: 'ABC123' });
+  assert.match(html, /This phone is on &lt;Old&gt;/);
+  assert.match(html, /Switch to New &amp; Co/);
+  assert.match(html, /name="confirm" value="1"/);
+});

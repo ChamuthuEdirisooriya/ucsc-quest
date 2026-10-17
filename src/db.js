@@ -81,6 +81,8 @@ CREATE TABLE IF NOT EXISTS teams (
   join_code    TEXT NOT NULL,
   progress     INTEGER NOT NULL DEFAULT 0,
   started_at   TEXT NOT NULL DEFAULT ${NOW},
+  -- When the team reached its current progress (ties on the board go to whoever got there first).
+  progress_at  TEXT NOT NULL DEFAULT ${NOW},
   last_seen_at TEXT NOT NULL DEFAULT ${NOW},
   finished_at  TEXT,
   UNIQUE (hunt_id, join_code)
@@ -93,7 +95,15 @@ CREATE TABLE IF NOT EXISTS scans (
   code_id INTEGER REFERENCES codes(id) ON DELETE SET NULL,
   card_id INTEGER REFERENCES cards(id) ON DELETE SET NULL,
   result  TEXT NOT NULL,
+  position INTEGER, -- for 'advance': the milestone the scan reached
   at      TEXT NOT NULL DEFAULT ${NOW}
+);
+
+-- Signed-in organisers. The cookie holds a random token; only its hash is kept.
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  token_hash   TEXT PRIMARY KEY,
+  password_tag TEXT NOT NULL,
+  expires_at   INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_codes_hunt ON codes(hunt_id);
@@ -115,7 +125,21 @@ export function openDb(file) {
   const legacy = db.prepare("SELECT 1 FROM pragma_table_info('codes') WHERE name = 'token'").get();
   if (legacy) throw new Error(`${file} was created by an older version without decoy cards. Delete it (or set DATABASE_FILE) and restart.`);
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+const hasColumn = (db, table, column) =>
+  Boolean(db.prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?').get(table, column));
+
+/** Bring databases made by earlier versions up to the current schema. */
+function migrate(db) {
+  if (!hasColumn(db, 'scans', 'position')) db.exec('ALTER TABLE scans ADD COLUMN position INTEGER');
+  if (!hasColumn(db, 'teams', 'progress_at')) {
+    db.exec(`ALTER TABLE teams ADD COLUMN progress_at TEXT;
+      UPDATE teams SET progress_at = COALESCE(
+        (SELECT MAX(s.at) FROM scans s WHERE s.team_id = teams.id AND s.result = 'advance'), started_at);`);
+  }
 }
 
 export function tx(db, fn) {

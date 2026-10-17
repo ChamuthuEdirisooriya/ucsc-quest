@@ -30,8 +30,14 @@ export function cleanBaseUrl(raw) {
 
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 10;
+const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 
-export function createApp({ db, adminPassword, trustProxy = 'loopback, linklocal, uniquelocal' }) {
+/**
+ * `trustProxy` is off by default: phones on the event Wi-Fi talk to this server
+ * directly, and must not be able to pick their own req.ip with X-Forwarded-For.
+ * Behind a reverse proxy, pass that proxy's address (TRUST_PROXY).
+ */
+export function createApp({ db, adminPassword, trustProxy = false }) {
   let secret = getSetting(db, 'cookie_secret');
   if (!secret) {
     secret = crypto.randomBytes(32).toString('hex');
@@ -39,9 +45,31 @@ export function createApp({ db, adminPassword, trustProxy = 'loopback, linklocal
   }
 
   const app = express();
-  // Only trust X-Forwarded-* from local/private proxies, so clients can't spoof req.ip.
   app.set('trust proxy', trustProxy);
   app.disable('x-powered-by');
+
+  // Refuse anything that changes state when the browser says another site started it.
+  // Cookies alone cannot stop this: a cross-site form can still link a phone to
+  // someone else's team, because that request sets the cookie instead of sending it.
+  app.use((req, res, next) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || fromThisSite(req)) return next();
+    next(new UserError('This request came from another website, so it was blocked.', 403));
+  });
+  const fromThisSite = (req) => {
+    const site = req.get('sec-fetch-site');
+    if (site) return site === 'same-origin' || site === 'none';
+    const origin = req.get('origin');
+    if (!origin) return true; // not sent by a browser
+    let host;
+    try {
+      host = new URL(origin).host;
+    } catch {
+      return false; // "null" and other opaque origins
+    }
+    const known = [getSetting(db, 'base_url'), process.env.PUBLIC_URL].filter(Boolean).map((u) => URL.parse(u)?.host);
+    return [req.get('host'), req.host, ...known].includes(host);
+  };
+
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: false }));
   app.use((req, res, next) => {
@@ -58,10 +86,24 @@ export function createApp({ db, adminPassword, trustProxy = 'loopback, linklocal
       signed: true, httpOnly: true, sameSite: 'lax', secure: isProd, maxAge: 1000 * 60 * 60 * 24 * 30,
     });
   const teamFor = (req, huntId) => game.getTeamByToken(db, huntId, req.signedCookies[teamCookie(huntId)]);
-  // The admin session value is derived from the password, so changing
-  // ADMIN_PASSWORD signs every existing session out.
-  const adminSession = crypto.createHmac('sha256', secret).update(`admin:${adminPassword}`).digest('base64url');
-  const isAdmin = (req) => req.signedCookies.admin === adminSession;
+
+  // Organiser sessions: a random token in the cookie, its hash in the database
+  // with an expiry. Signing out deletes it; changing ADMIN_PASSWORD voids them all.
+  const passwordTag = crypto.createHmac('sha256', secret).update(`admin:${adminPassword}`).digest('base64url');
+  const tokenHash = (token) => crypto.createHash('sha256').update(token).digest('base64url');
+  const startSession = () => {
+    const token = crypto.randomBytes(32).toString('base64url');
+    db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(Date.now());
+    db.prepare('INSERT INTO admin_sessions (token_hash, password_tag, expires_at) VALUES (?, ?, ?)')
+      .run(tokenHash(token), passwordTag, Date.now() + SESSION_MS);
+    return token;
+  };
+  const isAdmin = (req) => {
+    const token = req.signedCookies.admin;
+    if (typeof token !== 'string' || !token) return false;
+    const session = db.prepare('SELECT password_tag, expires_at FROM admin_sessions WHERE token_hash = ?').get(tokenHash(token));
+    return Boolean(session && session.password_tag === passwordTag && session.expires_at > Date.now());
+  };
 
   const baseUrl = (req) =>
     (getSetting(db, 'base_url') || process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
@@ -141,6 +183,9 @@ export function createApp({ db, adminPassword, trustProxy = 'loopback, linklocal
     if (!team) {
       return res.status(400).send(views.noTeamPage(hunt, { joinError: 'No team has that code. Check the code on your teammate’s phone.', joinCode: req.body.code }));
     }
+    // A phone already on another team only switches when its holder says so.
+    const current = teamFor(req, hunt.id);
+    if (current && current.id !== team.id && req.body.confirm !== '1') return res.send(views.switchTeamPage(hunt, current, team));
     setTeamCookie(res, team);
     res.redirect(303, `/play/${hunt.id}?s=rejoined`);
   });
@@ -178,11 +223,13 @@ export function createApp({ db, adminPassword, trustProxy = 'loopback, linklocal
       return res.status(401).json({ error: 'Wrong password.' });
     }
     failures.delete(req.ip);
-    res.cookie('admin', adminSession, { signed: true, httpOnly: true, sameSite: 'lax', secure: isProd, maxAge: 1000 * 60 * 60 * 24 * 7 });
+    res.cookie('admin', startSession(), { signed: true, httpOnly: true, sameSite: 'lax', secure: isProd, maxAge: SESSION_MS });
     res.json({ ok: true });
   });
 
   api.post('/logout', (req, res) => {
+    const token = req.signedCookies.admin;
+    if (typeof token === 'string') db.prepare('DELETE FROM admin_sessions WHERE token_hash = ?').run(tokenHash(token));
     res.clearCookie('admin');
     res.json({ ok: true });
   });
@@ -335,11 +382,7 @@ export function createApp({ db, adminPassword, trustProxy = 'loopback, linklocal
     res.json({ ok: true });
   });
 
-  api.use((err, req, res, next) => {
-    if (err instanceof UserError) return res.status(err.status).json({ error: err.message });
-    console.error(err);
-    res.status(500).json({ error: 'Something went wrong on the server.' });
-  });
+  api.use((req, res) => res.status(404).json({ error: 'Not found.' }));
 
   /* ------------------------------------------------ printable QR sheet */
 
@@ -347,8 +390,10 @@ export function createApp({ db, adminPassword, trustProxy = 'loopback, linklocal
     if (!isAdmin(req)) return res.redirect('/admin/');
     const bundle = game.getBundle(db, req.params.huntId);
     if (!bundle) return res.status(404).send('Hunt not found');
-    const kinds = String(req.query.kinds || 'start,checkpoint,decoy,finish').split(',');
-    const only = req.query.ids ? new Set(String(req.query.ids).split(',').map(Number)) : null;
+    // A missing filter means everything; an empty one (every box unticked) means nothing.
+    const list = (value) => String(value).split(',').filter(Boolean);
+    const kinds = req.query.kinds === undefined ? ['start', 'checkpoint', 'decoy', 'finish'] : list(req.query.kinds);
+    const only = req.query.ids === undefined ? null : new Set(list(req.query.ids).map(Number));
     const pathName = new Map(bundle.paths.map((p) => [p.id, p.name]));
     const codes = bundle.codes.filter((c) => kinds.includes(c.kind) && (!only || only.has(c.id)));
     const cards = await Promise.all(codes.flatMap((code) => code.cards.map(async (card) => ({
@@ -362,10 +407,19 @@ export function createApp({ db, adminPassword, trustProxy = 'loopback, linklocal
 
   app.get('/', (req, res) => res.redirect('/admin/'));
 
+  // One error handler for the whole app: JSON under /api, a page everywhere else.
+  // Client mistakes (bad JSON, a body that is too big) keep their 4xx status.
   app.use((err, req, res, next) => {
-    if (err instanceof UserError) return res.status(err.status).send(views.messagePage('Hold on', err.message));
-    console.error(err);
-    res.status(500).send(views.messagePage('Something went wrong', 'Please try again in a moment.'));
+    let status = 500;
+    let message = null;
+    if (err instanceof UserError) [status, message] = [err.status, err.message];
+    else if (err.status >= 400 && err.status < 500) {
+      status = err.status;
+      message = { 'entity.parse.failed': 'The request body is not valid JSON.', 'entity.too.large': 'That request is too large.' }[err.type] ?? 'That request could not be read.';
+    } else console.error(err);
+
+    if (req.path.startsWith('/api/')) return res.status(status).json({ error: message ?? 'Something went wrong on the server.' });
+    res.status(status).send(message ? views.messagePage('Hold on', message) : views.messagePage('Something went wrong', 'Please try again in a moment.'));
   });
 
   return app;

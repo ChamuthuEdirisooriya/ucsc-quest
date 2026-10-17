@@ -9,14 +9,15 @@ async function start({ password = 'secret-pass', db = openDb(':memory:') } = {})
   const server = createApp({ db, adminPassword: password }).listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const request = (path, { cookie, json, form, method } = {}) => fetch(base + path, {
-    method: method ?? (json || form ? 'POST' : 'GET'),
+  const request = (path, { cookie, json, form, body, method, headers } = {}) => fetch(base + path, {
+    method: method ?? (json || form || body ? 'POST' : 'GET'),
     redirect: 'manual',
     headers: {
       ...(cookie ? { cookie } : {}),
-      ...(json ? { 'content-type': 'application/json' } : {}),
+      ...(json || body ? { 'content-type': 'application/json' } : {}),
+      ...headers,
     },
-    body: json ? JSON.stringify(json) : form ? new URLSearchParams(form) : undefined,
+    body: json ? JSON.stringify(json) : form ? new URLSearchParams(form) : body,
   });
   return { db, base, request, close: () => new Promise((r) => server.close(r)) };
 }
@@ -120,4 +121,89 @@ test('a phone registers at the start, scans its first milestone and can link a s
   assert.equal(rejoin.status, 303);
   const second = await (await app.request(`/play/${huntId}`, { cookie: cookieOf(rejoin) })).text();
   assert.match(second, /1 of 2 found/);
+});
+
+/** A live hunt with two registered teams, each holding its phone's cookie. */
+async function twoTeams(app) {
+  const { huntId, startToken } = liveHunt(app.db);
+  const phone = async (name) => cookieOf(await app.request(`/q/${startToken}/join`, { form: { name } }));
+  const mine = await phone('Victims');
+  await phone('Attackers');
+  const code = (name) => app.db.prepare('SELECT join_code FROM teams WHERE name = ?').get(name).join_code;
+  return { huntId, mine, attackersCode: code('Attackers') };
+}
+
+test('another website cannot link a phone to a different team', async (t) => {
+  const app = await start();
+  t.after(app.close);
+  const { huntId, mine, attackersCode } = await twoTeams(app);
+  for (const headers of [{ 'sec-fetch-site': 'cross-site' }, { origin: 'https://evil.example' }, { origin: 'null' }]) {
+    const res = await app.request(`/h/${huntId}/rejoin`, { cookie: mine, form: { code: attackersCode, confirm: '1' }, headers });
+    assert.equal(res.status, 403);
+    assert.equal(res.headers.get('set-cookie'), null);
+  }
+  // The same request from the hunt's own page is fine.
+  const own = await app.request(`/h/${huntId}/rejoin`, { cookie: mine, form: { code: attackersCode, confirm: '1' }, headers: { origin: app.base } });
+  assert.equal(own.status, 303);
+});
+
+test('a phone on a team only switches teams when its holder confirms', async (t) => {
+  const app = await start();
+  t.after(app.close);
+  const { huntId, mine, attackersCode } = await twoTeams(app);
+  const ask = await app.request(`/h/${huntId}/rejoin`, { cookie: mine, form: { code: attackersCode } });
+  assert.equal(ask.status, 200);
+  assert.equal(ask.headers.get('set-cookie'), null);
+  assert.match(await ask.text(), /Switch teams\?[\s\S]*This phone is on Victims/);
+  const yes = await app.request(`/h/${huntId}/rejoin`, { cookie: mine, form: { code: attackersCode, confirm: '1' } });
+  assert.equal(yes.status, 303);
+  assert.ok(yes.headers.get('set-cookie'));
+});
+
+test('X-Forwarded-For cannot get around the login limit', async (t) => {
+  const app = await start();
+  t.after(app.close);
+  const statuses = [];
+  for (let i = 0; i < 12; i++) {
+    statuses.push((await app.request('/api/login', { json: { password: `guess-${i}` }, headers: { 'x-forwarded-for': `10.0.0.${i}` } })).status);
+  }
+  assert.deepEqual(statuses.slice(10), [429, 429]);
+});
+
+test('signing out ends the session on the server, and sessions expire', async (t) => {
+  const app = await start();
+  t.after(app.close);
+  const kept = await login(app);
+  assert.equal((await app.request('/api/logout', { cookie: kept, method: 'POST' })).status, 200);
+  assert.equal((await app.request('/api/hunts', { cookie: kept })).status, 401); // a copy of the cookie is dead too
+
+  const other = await login(app);
+  app.db.prepare('UPDATE admin_sessions SET expires_at = ?').run(Date.now() - 1);
+  assert.equal((await app.request('/api/hunts', { cookie: other })).status, 401);
+});
+
+test('malformed requests get a 4xx JSON error, not a 500 page', async (t) => {
+  const app = await start();
+  t.after(app.close);
+  const bad = await app.request('/api/login', { body: '{"invalid":' });
+  assert.equal(bad.status, 400);
+  assert.match(bad.headers.get('content-type'), /json/);
+  assert.deepEqual(await bad.json(), { error: 'The request body is not valid JSON.' });
+  const huge = await app.request('/api/login', { body: JSON.stringify({ password: 'x'.repeat(2 * 1024 * 1024) }) });
+  assert.equal(huge.status, 413);
+  const cookie = await login(app);
+  const missing = await app.request('/api/nothing-here', { cookie });
+  assert.equal(missing.status, 404);
+  assert.match(missing.headers.get('content-type'), /json/);
+});
+
+test('the print sheet prints nothing when every kind is unticked', async (t) => {
+  const app = await start();
+  t.after(app.close);
+  const { huntId } = liveHunt(app.db);
+  const cookie = await login(app);
+  const cards = async (query) => ((await (await app.request(`/admin/print/${huntId}${query}`, { cookie })).text()).match(/class="card"/g) ?? []).length;
+  assert.equal(await cards('?kinds=&labels=1'), 0);
+  assert.equal(await cards('?ids='), 0);
+  assert.ok((await cards('')) > 0);
 });

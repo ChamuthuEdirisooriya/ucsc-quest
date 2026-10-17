@@ -154,7 +154,9 @@ export function getBundle(db, huntId, { overrides = {}, cards = true } = {}) {
   }
 
   const paths = db.prepare(`
-    SELECT p.*, (SELECT COUNT(*) FROM teams t WHERE t.path_id = p.id) AS team_count
+    SELECT p.*,
+      (SELECT COUNT(*) FROM teams t WHERE t.path_id = p.id) AS team_count,
+      (SELECT COALESCE(MAX(t.progress), 0) FROM teams t WHERE t.path_id = p.id) AS max_progress
     FROM paths p WHERE p.hunt_id = ? ORDER BY p.id
   `).all(huntId);
 
@@ -194,26 +196,7 @@ export function validateHunt(bundle) {
   const codeById = new Map(codes.map((c) => [c.id, c]));
 
   if (paths.length === 0) errors.push({ message: 'Create at least one path.' });
-
-  for (const p of paths) {
-    const at = { path_id: p.id };
-    if (!p.start_clue.trim()) errors.push({ ...at, message: `${p.name}: the starting clue (shown when a team registers) is empty.` });
-    const seen = new Set();
-    for (const s of p.steps) {
-      const where = `${p.name}, milestone ${s.position}`;
-      const code = s.code_id ? codeById.get(s.code_id) : null;
-      if (!code) errors.push({ ...at, position: s.position, message: `${where}: choose a checkpoint QR.` });
-      else if (code.kind !== 'checkpoint') errors.push({ ...at, position: s.position, message: `${where}: only checkpoint QRs can be milestones.` });
-      if (!s.clue.trim()) {
-        const target = s.position === hunt.milestones ? 'the final destination' : `milestone ${s.position + 1}`;
-        errors.push({ ...at, position: s.position, message: `${where}: write the clue that leads to ${target}.` });
-      }
-      if (s.code_id) {
-        if (seen.has(s.code_id)) errors.push({ ...at, position: s.position, message: `${where}: this QR is already used earlier in the same path.` });
-        seen.add(s.code_id);
-      }
-    }
-  }
+  for (const p of paths) errors.push(...pathErrors(p, codeById, hunt.milestones));
 
   const signatures = new Map();
   for (const p of paths) {
@@ -236,6 +219,51 @@ export function validateHunt(bundle) {
   }
 
   return { errors, warnings };
+}
+
+/** What stops one path (padded to `milestones` steps) from being given to a team. */
+function pathErrors(p, codeById, milestones) {
+  const errors = [];
+  const at = { path_id: p.id };
+  if (!p.start_clue.trim()) errors.push({ ...at, message: `${p.name}: the starting clue (shown when a team registers) is empty.` });
+  const seen = new Set();
+  for (const s of p.steps) {
+    const where = `${p.name}, milestone ${s.position}`;
+    const code = s.code_id ? codeById.get(s.code_id) : null;
+    if (!code) errors.push({ ...at, position: s.position, message: `${where}: choose a checkpoint QR.` });
+    else if (code.kind !== 'checkpoint') errors.push({ ...at, position: s.position, message: `${where}: only checkpoint QRs can be milestones.` });
+    if (!s.clue.trim()) {
+      const target = s.position === milestones ? 'the final destination' : `milestone ${s.position + 1}`;
+      errors.push({ ...at, position: s.position, message: `${where}: write the clue that leads to ${target}.` });
+    }
+    if (s.code_id) {
+      if (seen.has(s.code_id)) errors.push({ ...at, position: s.position, message: `${where}: this QR is already used earlier in the same path.` });
+      seen.add(s.code_id);
+    }
+  }
+  return errors;
+}
+
+/** The paths a team can be given: complete, with every clue written. */
+function readyPaths(bundle) {
+  const codeById = new Map(bundle.codes.map((c) => [c.id, c]));
+  return bundle.paths.filter((p) => pathErrors(p, codeById, bundle.hunt.milestones).length === 0);
+}
+
+/**
+ * Run a change to a hunt's paths in one transaction, and undo it if it would
+ * leave a live hunt with no path that new teams can be given.
+ */
+function changePaths(db, huntId, change) {
+  return tx(db, () => {
+    const live = getHunt(db, huntId)?.status === 'live';
+    const readyBefore = live && readyPaths(getBundle(db, huntId, { cards: false })).length;
+    const result = change();
+    if (readyBefore && readyPaths(getBundle(db, huntId, { cards: false })).length === 0) {
+      throw new UserError('That would leave the live hunt with no ready path for new teams. Pause the hunt (move it to draft) first.');
+    }
+    return result;
+  });
 }
 
 /* ---------------------------------------------------------------- codes */
@@ -407,6 +435,11 @@ function pathName(index) {
   return `Path ${s}`;
 }
 
+/**
+ * Save a path's name, colour, clues and checkpoints. A team's progress is a
+ * position on its path, so once teams are following a path, the checkpoints
+ * they have already found are fixed and the path has to stay complete.
+ */
 export function savePath(db, pathId, { name, color, start_clue, steps }) {
   const path = db.prepare('SELECT * FROM paths WHERE id = ?').get(pathId);
   if (!path) throw new UserError('Path not found.', 404);
@@ -434,7 +467,17 @@ export function savePath(db, pathId, { name, color, start_clue, steps }) {
     });
   }
 
-  tx(db, () => {
+  changePaths(db, hunt.id, () => {
+    const { teams, reached } = db.prepare('SELECT COUNT(*) AS teams, COALESCE(MAX(progress), 0) AS reached FROM teams WHERE path_id = ?').get(pathId);
+    if (cleanSteps) {
+      const before = new Map(pathSteps(db, pathId).map((s) => [s.position, s.code_id]));
+      for (let position = 1; position <= reached; position++) {
+        if ((cleanSteps[position - 1]?.code_id ?? null) !== (before.get(position) ?? null)) {
+          throw new UserError(`Milestone ${position}: a team on this path has already found it, so its checkpoint cannot change. You can still edit its clue, or move the team to another path first.`);
+        }
+      }
+    }
+
     db.prepare('UPDATE paths SET name = ?, color = ?, start_clue = ? WHERE id = ?').run(
       cleanName,
       color ?? path.color,
@@ -448,20 +491,32 @@ export function savePath(db, pathId, { name, color, start_clue, steps }) {
         if (s.code_id || s.clue) insert.run(pathId, s.position, s.code_id, s.clue);
       }
     }
+
+    if (teams) {
+      const bundle = getBundle(db, hunt.id, { cards: false });
+      const saved = bundle.paths.find((p) => p.id === pathId);
+      const [problem] = pathErrors(saved, new Map(bundle.codes.map((c) => [c.id, c])), hunt.milestones);
+      if (problem) throw new UserError(`Teams are following this path, so it has to stay complete. ${problem.message}`);
+    }
   });
 }
 
 export function deletePath(db, pathId) {
-  const teams = db.prepare('SELECT COUNT(*) AS n FROM teams WHERE path_id = ?').get(pathId).n;
-  if (teams) throw new UserError(`${teams} team(s) are following this path. Move or delete them first.`);
-  db.prepare('DELETE FROM paths WHERE id = ?').run(pathId);
+  const path = db.prepare('SELECT * FROM paths WHERE id = ?').get(pathId);
+  if (!path) throw new UserError('Path not found.', 404);
+  changePaths(db, path.hunt_id, () => {
+    const teams = db.prepare('SELECT COUNT(*) AS n FROM teams WHERE path_id = ?').get(pathId).n;
+    if (teams) throw new UserError(`${teams} team(s) are following this path. Move or delete them first.`);
+    db.prepare('DELETE FROM paths WHERE id = ?').run(pathId);
+  });
 }
 
 /**
  * Create `count` new paths from the hunt's checkpoint pool. Every path gets
  * exactly `milestones` distinct checkpoints. Checkpoints are spread as evenly
  * as possible (so some end up exclusive when the pool is large, and shared when
- * it is small) and each path gets a different first stop where possible.
+ * it is small), each path gets a different first stop where possible, and no
+ * two paths visit the same checkpoints in the same order.
  * Clues are left blank for the organisers to write.
  */
 export function generatePaths(db, huntId, count, { replace = false } = {}) {
@@ -473,34 +528,83 @@ export function generatePaths(db, huntId, count, { replace = false } = {}) {
   if (pool.length < n) throw new UserError(`Each path needs ${n} different checkpoints, but only ${pool.length} exist. Add more checkpoint QRs first.`);
   if (replace && bundle.paths.some((p) => p.team_count > 0)) throw new UserError('Teams are already following these paths, so they cannot be replaced.');
 
+  const kept = replace ? [] : bundle.paths;
   const usage = new Map(pool.map((id) => [id, 0]));
   const firstUsage = new Map(pool.map((id) => [id, 0]));
-  if (!replace) {
-    for (const p of bundle.paths) {
-      for (const s of p.steps) if (usage.has(s.code_id)) usage.set(s.code_id, usage.get(s.code_id) + 1);
-      if (firstUsage.has(p.steps[0]?.code_id)) firstUsage.set(p.steps[0].code_id, firstUsage.get(p.steps[0].code_id) + 1);
-    }
+  for (const p of kept) {
+    for (const s of p.steps) if (usage.has(s.code_id)) usage.set(s.code_id, usage.get(s.code_id) + 1);
+    if (firstUsage.has(p.steps[0]?.code_id)) firstUsage.set(p.steps[0].code_id, firstUsage.get(p.steps[0].code_id) + 1);
   }
+
+  // Routes already walked by a kept path, so new paths never repeat one.
+  const taken = new Set(kept.filter((p) => p.steps.every((s) => s.code_id)).map((p) => p.steps.map((s) => s.code_id).join()));
+  const capacity = routeCount(pool.length, n, 1_000_000); // exact below a million
+  if (taken.size + count > capacity) {
+    const left = capacity - taken.size;
+    throw new UserError(`${pool.length} checkpoints with ${n} milestones per team make only ${capacity} different routes`
+      + (taken.size ? `, and the existing paths already use ${taken.size}, so at most ${left} more can be generated.` : '.')
+      + ' Add more checkpoints or generate fewer paths.');
+  }
+
   const leastUsed = (candidates, counts) =>
     shuffle(candidates).sort((a, b) => counts.get(a) - counts.get(b));
+  // The balanced choice: the least-used first stop, then the least-used checkpoints in a random order.
+  const balanced = () => {
+    const first = leastUsed(pool, new Map(pool.map((id) => [id, firstUsage.get(id) * 1000 + usage.get(id)])))[0];
+    return [first, ...shuffle(leastUsed(pool.filter((id) => id !== first), usage).slice(0, n - 1))];
+  };
+  const imbalance = (route) => firstUsage.get(route[0]) * 1000 + route.reduce((sum, id) => sum + usage.get(id), 0);
+  const nextRoute = () => {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const route = balanced();
+      if (!taken.has(route.join())) return route;
+    }
+    // Every balanced choice is taken. With few possible routes, take the
+    // best-balanced unused one; with many, any random one is almost surely free.
+    if (capacity <= 100_000) {
+      let best = null;
+      for (const route of orderedRoutes(shuffle(pool), n)) {
+        if (!taken.has(route.join()) && (!best || imbalance(route) < imbalance(best))) best = route;
+      }
+      return best;
+    }
+    for (;;) {
+      const route = shuffle(pool).slice(0, n);
+      if (!taken.has(route.join())) return route;
+    }
+  };
 
-  return tx(db, () => {
+  return changePaths(db, huntId, () => {
     if (replace) db.prepare('DELETE FROM paths WHERE hunt_id = ?').run(huntId);
+    const insert = db.prepare('INSERT INTO path_steps (path_id, position, code_id, clue) VALUES (?, ?, ?, ?)');
     const created = [];
     for (let i = 0; i < count; i++) {
-      const first = leastUsed(pool, new Map(pool.map((id) => [id, firstUsage.get(id) * 1000 + usage.get(id)])))[0];
-      const rest = shuffle(leastUsed(pool.filter((id) => id !== first), usage).slice(0, n - 1));
-      const steps = [first, ...rest];
-      firstUsage.set(first, firstUsage.get(first) + 1);
+      const steps = nextRoute();
+      taken.add(steps.join());
+      firstUsage.set(steps[0], firstUsage.get(steps[0]) + 1);
       for (const id of steps) usage.set(id, usage.get(id) + 1);
 
       const pathId = createPath(db, huntId);
-      const insert = db.prepare('INSERT INTO path_steps (path_id, position, code_id, clue) VALUES (?, ?, ?, ?)');
       steps.forEach((codeId, idx) => insert.run(pathId, idx + 1, codeId, ''));
       created.push(pathId);
     }
     return created;
   });
+}
+
+/** How many ordered routes of n different stops m checkpoints allow (counting stops once it passes `limit`). */
+function routeCount(m, n, limit) {
+  let total = 1;
+  for (let i = 0; i < n && total <= limit; i++) total *= m - i;
+  return total;
+}
+
+function* orderedRoutes(pool, n, prefix = []) {
+  if (prefix.length === n) {
+    yield prefix;
+    return;
+  }
+  for (const id of pool) if (!prefix.includes(id)) yield* orderedRoutes(pool, n, [...prefix, id]);
 }
 
 function shuffle(arr) {
@@ -527,10 +631,7 @@ export function getTeamByJoinCode(db, huntId, joinCode) {
 
 /** Pick the complete path with the fewest teams, so teams spread across all paths. */
 function choosePath(db, huntId) {
-  const bundle = getBundle(db, huntId, { cards: false });
-  const { errors } = validateHunt(bundle);
-  const broken = new Set(errors.map((e) => e.path_id).filter(Boolean));
-  const ready = bundle.paths.filter((p) => !broken.has(p.id));
+  const ready = readyPaths(getBundle(db, huntId, { cards: false }));
   if (ready.length === 0) throw new UserError('This hunt has no ready paths yet. Please find an organiser.', 503);
   const fewest = Math.min(...ready.map((p) => p.team_count));
   const candidates = ready.filter((p) => p.team_count === fewest);
@@ -609,9 +710,9 @@ export function teamView(db, team) {
 export function scanCard(db, card, team, now = Date.now()) {
   const code = getCode(db, card.code_id);
   const hunt = getHunt(db, code.hunt_id);
-  const log = (result) =>
-    db.prepare('INSERT INTO scans (hunt_id, team_id, code_id, card_id, result) VALUES (?, ?, ?, ?, ?)')
-      .run(hunt.id, team?.id ?? null, code.id, card.id, result);
+  const log = (result, position = null) =>
+    db.prepare('INSERT INTO scans (hunt_id, team_id, code_id, card_id, result, position) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(hunt.id, team?.id ?? null, code.id, card.id, result, position);
   const touch = () => team && db.prepare("UPDATE teams SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(team.id);
 
   if (code.kind === 'start') return { type: team ? 'resume' : 'join' };
@@ -661,8 +762,8 @@ function scanRealCard(db, hunt, code, team, log) {
     return { type: 'again', position: step.position, total: hunt.milestones };
   }
   if (step.position === fresh.progress + 1 && !fresh.finished_at) {
-    db.prepare('UPDATE teams SET progress = ? WHERE id = ?').run(step.position, team.id);
-    log('advance');
+    db.prepare("UPDATE teams SET progress = ?, progress_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(step.position, team.id);
+    log('advance', step.position);
     return { type: 'found', position: step.position, total: hunt.milestones };
   }
   log('ahead');
@@ -676,6 +777,7 @@ export function liveData(db, huntId) {
   if (!bundle) return null;
   const codeById = new Map(bundle.codes.map((c) => [c.id, c]));
   const pathById = new Map(bundle.paths.map((p) => [p.id, p]));
+  const ready = new Set(readyPaths(bundle).map((p) => p.id));
   const n = bundle.hunt.milestones;
 
   const teams = db.prepare(`
@@ -684,10 +786,10 @@ export function liveData(db, huntId) {
       (SELECT COUNT(*) FROM scans s WHERE s.team_id = t.id AND s.result = 'decoy') AS decoy_scans,
       (SELECT s.code_id FROM scans s WHERE s.team_id = t.id ORDER BY s.id DESC LIMIT 1) AS last_code_id,
       (SELECT s.result FROM scans s WHERE s.team_id = t.id ORDER BY s.id DESC LIMIT 1) AS last_result,
-      COALESCE((SELECT MAX(s.at) FROM scans s WHERE s.team_id = t.id AND s.result = 'advance'), t.started_at) AS progress_at
+      t.progress_at
     FROM teams t WHERE t.hunt_id = ?
     -- finished teams by finishing time; the rest by progress, then by who reached it first
-    ORDER BY (t.finished_at IS NULL), t.finished_at, t.progress DESC, progress_at, t.id
+    ORDER BY (t.finished_at IS NULL), t.finished_at, t.progress DESC, t.progress_at, t.id
   `).all(huntId);
 
   let rank = 0;
@@ -723,7 +825,7 @@ export function liveData(db, huntId) {
 
   return {
     hunt: bundle.hunt,
-    paths: bundle.paths.map((p) => ({ id: p.id, name: p.name, color: p.color, team_count: p.team_count })),
+    paths: bundle.paths.map((p) => ({ id: p.id, name: p.name, color: p.color, team_count: p.team_count, ready: ready.has(p.id) })),
     teams,
     activity,
     stats: {
@@ -762,36 +864,65 @@ export function teamDetail(db, teamId) {
   }));
   route.push({ position: null, label: 'Final destination', reached: Boolean(team.finished_at), at: team.finished_at });
 
+  const ready = new Set(readyPaths(bundle).map((p) => p.id));
+
   return {
     team: { ...team, token: undefined },
+    milestones: bundle.hunt.milestones,
+    paths: bundle.paths.map((p) => ({ id: p.id, name: p.name, color: p.color, ready: ready.has(p.id) })),
     path: path && { id: path.id, name: path.name, color: path.color },
     route,
     scans: scans.map((s) => ({ ...s, code_label: describeCode(codeById.get(s.code_id)), code_kind: codeById.get(s.code_id)?.kind ?? null })),
   };
 }
 
-export function updateTeam(db, teamId, { name, path_id, progress }) {
-  const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(teamId);
-  if (!team) throw new UserError('Team not found.', 404);
-  const hunt = getHunt(db, team.hunt_id);
-  const next = { ...team };
+/**
+ * An organiser's correction to a team. Only the fields given change.
+ * `expect` is the team's { path_id, progress, finished_at } as the organiser
+ * last saw it: a path or progress change is refused if the team has scanned
+ * since, so a dialog left open can never undo progress the team really made.
+ */
+export function updateTeam(db, teamId, { name, path_id, progress, expect } = {}) {
+  return tx(db, () => {
+    const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(teamId);
+    if (!team) throw new UserError('Team not found.', 404);
+    const hunt = getHunt(db, team.hunt_id);
+    const next = { ...team };
 
-  if (name !== undefined) {
-    next.name = cleanTeamName(name);
-    const taken = db.prepare('SELECT 1 FROM teams WHERE hunt_id = ? AND lower(name) = lower(?) AND id != ?').get(team.hunt_id, next.name, teamId);
-    if (taken) throw new UserError('Another team already has that name.');
-  }
-  if (path_id !== undefined && Number(path_id) !== team.path_id) {
-    const path = db.prepare('SELECT * FROM paths WHERE id = ? AND hunt_id = ?').get(path_id, team.hunt_id);
-    if (!path) throw new UserError('Pick a path from this hunt.');
-    next.path_id = path.id;
-  }
-  if (progress !== undefined) {
-    const p = wholeNumber(progress, 0, hunt.milestones, `Progress must be between 0 and ${hunt.milestones}.`);
-    next.progress = p;
-    if (p < hunt.milestones) next.finished_at = null;
-  }
+    if (name !== undefined) {
+      next.name = cleanTeamName(name);
+      const taken = db.prepare('SELECT 1 FROM teams WHERE hunt_id = ? AND lower(name) = lower(?) AND id != ?').get(team.hunt_id, next.name, teamId);
+      if (taken) throw new UserError('Another team already has that name.');
+    }
 
-  db.prepare('UPDATE teams SET name = ?, path_id = ?, progress = ?, finished_at = ? WHERE id = ?')
-    .run(next.name, next.path_id, next.progress, next.finished_at, teamId);
+    const moving = path_id !== undefined && Number(path_id) !== team.path_id;
+    const correcting = progress !== undefined && Number(progress) !== team.progress;
+    if ((moving || correcting) && expect && (
+      Number(expect.progress) !== team.progress
+      || Number(expect.path_id ?? 0) !== (team.path_id ?? 0)
+      || (expect.finished_at ?? null) !== team.finished_at)) {
+      throw new UserError('This team has scanned since you opened it, so nothing was changed. Check where they are now and try again.', 409);
+    }
+
+    if (moving) {
+      const bundle = getBundle(db, team.hunt_id, { cards: false });
+      const path = bundle.paths.find((p) => p.id === Number(path_id));
+      if (!path) throw new UserError('Pick a path from this hunt.');
+      if (!readyPaths(bundle).some((p) => p.id === path.id)) throw new UserError(`${path.name} is not ready yet: it needs every checkpoint and clue filled in first.`);
+      next.path_id = path.id;
+    }
+    if (correcting) {
+      const p = wholeNumber(progress, 0, hunt.milestones, `Progress must be between 0 and ${hunt.milestones}.`);
+      next.progress = p;
+      if (p < hunt.milestones) next.finished_at = null;
+      // Moved back: they keep the time they first reached that milestone. Moved forward: from now.
+      const reachedAt = p === 0 ? team.started_at
+        : p < team.progress ? db.prepare("SELECT MAX(at) AS at FROM scans WHERE team_id = ? AND result = 'advance' AND position = ?").get(teamId, p).at
+        : null;
+      next.progress_at = reachedAt ?? new Date().toISOString();
+    }
+
+    db.prepare('UPDATE teams SET name = ?, path_id = ?, progress = ?, progress_at = ?, finished_at = ? WHERE id = ?')
+      .run(next.name, next.path_id, next.progress, next.progress_at, next.finished_at, teamId);
+  });
 }
